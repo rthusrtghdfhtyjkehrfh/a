@@ -1,0 +1,3478 @@
+local repo = "https://raw.githubusercontent.com/dgwowxyz/uwuware/main/"
+
+local Library = loadstring(game:HttpGet(repo .. "Library.lua"))()
+local ThemeManager = loadstring(game:HttpGet(repo .. "addons/ThemeManager.lua"))()
+local SaveManager = loadstring(game:HttpGet(repo .. "addons/SaveManager.lua"))()
+local Options = Library.Options
+local Toggles = Library.Toggles
+
+Library.ShowToggleFrameInKeybinds = true -- Make toggle keybinds work inside the keybinds UI (aka adds a toggle to the UI). Good for mobile users (Default value = true)
+Library.ShowCustomCursor = true -- Toggles the Linoria cursor globaly (Default value = true)
+Library.NotifySide = "Left" -- Changes the side of the notifications globaly (Left, Right) (Default value = Left)
+
+local Window = Library:CreateWindow({
+    Title = "radium | project delta",
+    Center = true,
+    AutoShow = true,
+    Resizable = true,
+    ShowCustomCursor = true,
+    UnlockMouseWhileOpen = true,
+    NotifySide = "Left",
+    TabPadding = 8,
+    MenuFadeTime = 0.1,
+
+    Size = UDim2.fromOffset(550, 815)
+})
+
+-- // 1. SERVICES & DEPENDENCIES
+local dim_offset    = UDim2.fromOffset
+local rgb           = Color3.fromRGB
+
+local Players           = cloneref and cloneref(game:GetService("Players")) or game:GetService("Players")
+local RunService        = game:GetService('RunService')
+local UserInputService  = game:GetService("UserInputService")
+local Lighting          = game:GetService("Lighting")
+local CoreGui           = game:GetService('CoreGui')
+local Camera            = workspace.CurrentCamera
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService      = game:GetService("TweenService")
+local HttpService       = game:GetService("HttpService")
+
+local LocalPlayer       = Players.LocalPlayer
+local DroppedItems      = workspace:WaitForChild("DroppedItems")
+
+local function IsCorpse(model)
+    return model:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse       = LocalPlayer:GetMouse()
+
+-- ============================================================
+-- // window
+-- ============================================================
+
+local Tabs = {
+    Main       = Window:AddTab('game'),
+    Combat     = Window:AddTab('combat'),
+    Visuals    = Window:AddTab('visuals'),
+    Rage       = Window:AddTab('character'),
+    Misc       = Window:AddTab('misc'),
+    UISettings = Window:AddTab('settings'),
+}
+
+-- ============================================================
+-- // bro
+-- ============================================================
+
+local CurrentAnimTrack = nil
+local WireframeFolder = Instance.new("Folder", game:GetService("CoreGui"))
+WireframeFolder.Name = "RadiumWireframes"
+
+local R15_Parts = {
+    "Head", "UpperTorso", "LowerTorso", 
+    "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand",
+    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+    "RightUpperLeg", "RightLowerLeg", "RightFoot"
+}
+
+-- // 2. THE MASTER LOOP
+RunService.Stepped:Connect(function(dt)
+    if not (Toggles and Options and Options.desync_x) then return end
+    
+    local char = LocalPlayer.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not (hrp and hum) then return end
+
+    -- A. CFRAME MOVEMENT
+    if Toggles.rage_fly_enabled.Value then
+        hum.PlatformStand = true 
+        hrp.Velocity = Vector3.new((math.random()-0.5), 0.05, (math.random()-0.5))
+        
+        local moveDir = Vector3.zero
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + Camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - Camera.CFrame.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + Camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - Camera.CFrame.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDir = moveDir - Vector3.new(0, 1, 0) end
+        
+        if moveDir.Magnitude > 0 then 
+            hrp.CFrame = hrp.CFrame:Lerp(hrp.CFrame + (moveDir.Unit * Options.rage_fly_speed.Value), 0.8)
+        end
+    else
+        hum.PlatformStand = false
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) and Toggles.jump_manip_enabled.Value then
+            hrp.CFrame = hrp.CFrame + Vector3.new(0, Options.jump_power_val.Value / 10, 0)
+        end
+        if Toggles.rage_speed_enabled.Value and hum.MoveDirection.Magnitude > 0 then
+            hrp.CFrame = hrp.CFrame + (hum.MoveDirection * (Options.rage_speed_val.Value / 10))
+        end
+    end
+
+    -- B. FIXED YAW & AUTOROTATE BYPASS
+    if Toggles.desync_enabled.Value then
+        -- DISABLE AUTOROTATE so the game doesn't fight our Yaw
+        hum.AutoRotate = false 
+        
+        local camLook = Camera.CFrame.LookVector
+        local flatAngle = math.atan2(-camLook.X, -camLook.Z) 
+        
+        local spin = (Toggles.desync_spin_enabled.Value and (tick() * Options.desync_spin_speed.Value * 50) % 360) or 0
+        local jitter = (Toggles.jitter_enabled.Value and math.random(-Options.jitter_intensity.Value, Options.jitter_intensity.Value)) or 0
+        local yawOffset = math.rad(Options.custom_yaw_offset.Value + spin + jitter)
+        
+        -- Apply CFrame forcing the orientation
+        hrp.CFrame = CFrame.new(hrp.Position) * CFrame.Angles(0, flatAngle, 0) * CFrame.Angles(
+            math.rad(Options.desync_x.Value),
+            yawOffset, 
+            math.rad(Options.desync_z.Value)
+        )
+    else
+        hum.AutoRotate = true -- Re-enable when desync is off
+    end
+
+    -- C. HITBOXES
+    for _, limb in pairs(R15_Parts) do
+        local part = char:FindFirstChild(limb)
+        if part then
+            local wf = WireframeFolder:FindFirstChild("WF_"..limb)
+            if Toggles.show_hitboxes.Value then
+                if not wf then
+                    wf = Instance.new("SelectionBox", WireframeFolder)
+                    wf.Name = "WF_"..limb
+                    wf.Adornee = part
+                    wf.AlwaysOnTop = true
+                    wf.SurfaceTransparency = 1 
+                end
+                wf.Color3 = Options.hitbox_color.Value
+                wf.Transparency = Options.hitbox_transparency.Value
+                wf.LineThickness = Options.hitbox_thickness.Value
+            elseif wf then
+                wf:Destroy()
+            end
+        end
+    end
+end)
+
+-- // 3. UI SECTIONS
+local Mov = Tabs.Rage:AddLeftGroupbox('movement')
+Mov:AddToggle('rage_speed_enabled', {Text = 'CFrame speedhack'})
+Mov:AddSlider('rage_speed_val', {Text = 'speed', Min = 0, Max = 10, Default = 1, Rounding = 1})
+Mov:AddToggle('jump_manip_enabled', {Text = 'CFrame jump'})
+Mov:AddSlider('jump_power_val', {Text = 'height', Min = 1, Max = 20, Default = 5, Rounding = 1})
+Mov:AddToggle('rage_fly_enabled', {Text = 'CFrame fly'}):AddKeyPicker('FlyKey', {Default = '', SyncToggleState = true, Mode = 'Toggle', Text = 'CFrame fly'})
+Mov:AddSlider('rage_fly_speed', {Text = 'speed', Min = 0.01, Max = 5, Default = 1, Rounding = 2})
+
+local Dsync = Tabs.Rage:AddRightGroupbox('jitter desync')
+Dsync:AddToggle('desync_enabled', {Text = 'enable desync'})
+Dsync:AddSlider('desync_x', {Text = 'x rotation', Min = -180, Max = 180, Default = 0, Rounding = 0})
+Dsync:AddSlider('custom_yaw_offset', {Text = 'y rotation', Min = -180, Max = 180, Default = 0, Rounding = 0})
+Dsync:AddSlider('desync_z', {Text = 'z rotation', Min = -180, Max = 180, Default = 0, Rounding = 0})
+Dsync:AddToggle('desync_spin_enabled', {Text = 'spin bot'})
+Dsync:AddSlider('desync_spin_speed', {Text = 'spin speed', Min = 0, Max = 100, Default = 20, Rounding = 0})
+Dsync:AddToggle('jitter_enabled', {Text = 'enable jitter'})
+Dsync:AddSlider('jitter_intensity', {Text = 'jitter intensity', Min = 0, Max = 180, Default = 45, Rounding = 0})
+
+local Anim = Tabs.Rage:AddLeftGroupbox('animation injector')
+Anim:AddInput('anim_id_input', {Text = 'ID', Placeholder = 'ID...'})
+Anim:AddButton({Text = 'Play & Spoof', Func = function()
+    local id = Options.anim_id_input.Value
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hum and id ~= "" then
+        if CurrentAnimTrack then CurrentAnimTrack:Stop() end
+        local anim = Instance.new("Animation")
+        anim.AnimationId = "rbxassetid://" .. id
+        CurrentAnimTrack = hum:LoadAnimation(anim)
+        CurrentAnimTrack.Looped = true
+        CurrentAnimTrack:Play()
+    end
+end})
+Anim:AddButton({Text = 'Reset All', Func = function()
+    if CurrentAnimTrack then CurrentAnimTrack:Stop() end
+    local hum = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+    if hum then for _, track in pairs(hum:GetPlayingAnimationTracks()) do track:Stop() end end
+end})
+
+local Viz = Tabs.Rage:AddRightGroupbox('visuals')
+aetasdgfs = Viz:AddToggle('show_hitboxes', {Text = 'hitboxes', Default = true})
+aetasdgfs:AddColorPicker('hitbox_color', {Default = Color3.new(1, 1, 1)})
+Viz:AddSlider('hitbox_thickness', {Text = 'thickness', Min = 0.001, Max = 1, Default = 0.001, Rounding = 3})
+Viz:AddSlider('hitbox_transparency', {Text = 'transparency', Min = 0, Max = 1, Default = 0.7, Rounding = 2})
+
+local InvBox = Tabs.Main:AddRightGroupbox('inventory viewer')
+local StatsBox = Tabs.Main:AddRightGroupbox('player stats')
+
+InvBox:AddToggle('InvVisible', {
+    Text    = 'show inventory viewer',
+    Default = false,
+})
+
+InvBox:AddDivider()
+
+InvBox:AddToggle('InvShowText', {
+    Text = 'show item names',
+    Default = false,
+})
+
+InvBox:AddToggle('InvShowDurability', {
+    Text = 'show durability',
+    Default = false,
+})
+
+InvBox:AddSlider('InvPosX', {
+    Text     = 'position x',
+    Default  = 175,
+    Min      = 0,
+    Max      = 1800,
+    Rounding = 0,
+})
+
+InvBox:AddSlider('InvPosY', {
+    Text     = 'position y',
+    Default  = 50,
+    Min      = 0,
+    Max      = 900,
+    Rounding = 0,
+})
+
+StatsBox:AddToggle('StatsVisible', {
+    Text    = 'show player stats',
+    Default = false,
+})
+
+StatsBox:AddToggle('StatsShowHealth', {
+    Text    = 'show health',
+    Default = false,
+})
+
+StatsBox:AddToggle('StatsShowKDR', {
+    Text    = 'show KDR',
+    Default = false,
+})
+
+StatsBox:AddToggle('StatsShowClan', {
+    Text    = 'show clan',
+    Default = false,
+})
+
+StatsBox:AddToggle('StatsShowAccountAge', {
+    Text    = 'show account age',
+    Default = false,
+})
+
+StatsBox:AddDivider()
+
+StatsBox:AddSlider('StatsPosX', {
+    Text     = 'position x',
+    Default  = 560,
+    Min      = 0,
+    Max      = 1800,
+    Rounding = 0,
+})
+
+StatsBox:AddSlider('StatsPosY', {
+    Text     = 'position y',
+    Default  = 50,
+    Min      = 0,
+    Max      = 900,
+    Rounding = 0,
+})
+
+-- ============================================================
+-- // combat tab
+-- ============================================================
+
+local SilentState = {
+    Enabled         = false,
+    InstantHit      = false,
+    TargetAI        = false,
+    Wallbang        = false,
+    VisibilityCheck = true,
+    AimPart         = "Head",
+    ShowFOV         = false,
+    FOVRadius       = 150,
+    FOVSegments     = 180,
+    FOVColor        = Color3.fromRGB(255, 255, 255),
+    FOVAlpha        = 1,
+    FOVThickness    = 1,
+    target_part     = nil
+}
+
+local FOVLines = {}
+local function RefreshFOVLines()
+    for _, v in ipairs(FOVLines) do v:Remove() end
+    table.clear(FOVLines)
+    for i = 1, SilentState.FOVSegments do
+        local line = Drawing.new("Line")
+        line.Visible = false
+        line.Thickness = SilentState.FOVThickness
+        FOVLines[i] = line
+    end
+end
+RefreshFOVLines()
+
+local function isSilentVisible(target)
+    if not SilentState.VisibilityCheck then return true end
+    local origin = Camera.CFrame.Position
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { LocalPlayer.Character, target }
+    
+    for _, partName in ipairs({ "Head", "HumanoidRootPart" }) do
+        local part = target:FindFirstChild(partName)
+        if part then
+            local result = workspace:Raycast(origin, part.Position - origin, params)
+            if not result or result.Instance:IsDescendantOf(target) then return true end
+        end
+    end
+    return false
+end
+
+local function getSilentTarget()
+    local closest, closestDist = nil, SilentState.FOVRadius
+    local mousePos = UserInputService:GetMouseLocation()
+
+    -- AI Targeting
+    if SilentState.TargetAI and AiZones then
+        for _, zone in pairs(AiZones:GetChildren()) do
+            for _, npc in pairs(zone:GetChildren()) do
+                local part = npc:FindFirstChild(SilentState.AimPart)
+                local hum  = npc:FindFirstChildOfClass("Humanoid")
+                if part and hum and hum.Health > 0 then
+                    local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+                    if onScreen then
+                        local dist = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
+                        if dist < closestDist and isSilentVisible(npc) then
+                            closestDist = dist; closest = part
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Player Targeting
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr == LocalPlayer or not plr.Character then continue end
+        local part = plr.Character:FindFirstChild(SilentState.AimPart)
+        local hum  = plr.Character:FindFirstChildOfClass("Humanoid")
+        if part and hum and hum.Health > 0 then
+            local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+            if onScreen then
+                local dist = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
+                if dist < closestDist and isSilentVisible(plr.Character) then
+                    closestDist = dist; closest = part
+                end
+            end
+        end
+    end
+    return closest
+end
+
+-- ============================================================
+-- // NAMECCALL HOOKS (PROJECT DELTA SPECIFIC)
+-- ============================================================
+local __namecall; __namecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    if checkcaller() then return __namecall(self, ...) end
+    local args = { ... }
+    local method = getnamecallmethod()
+
+    if method == "InvokeServer" and self.Name == "FireProjectile" and SilentState.Enabled and SilentState.InstantHit and SilentState.target_part then
+        args[3] = 0 / 0
+        return __namecall(self, unpack(args))
+    end
+
+    if method == "FireServer" and self.Name == "ProjectileInflict" then
+        if debug.traceback():find("CharacterController") then return coroutine.yield() end
+        if SilentState.Enabled and SilentState.InstantHit then args[4] = 0 / 0 end
+        return __namecall(self, unpack(args))
+    end
+
+    if method == "Raycast" and SilentState.Enabled and SilentState.InstantHit and SilentState.target_part then
+        args[2] = SilentState.target_part.Position - args[1]
+        if SilentState.Wallbang then
+            return { Instance = SilentState.target_part, Position = SilentState.target_part.Position, Normal = Vector3.new(0,1,0), Material = Enum.Material.Plastic, Distance = 0 }
+        end
+    end
+
+    return __namecall(self, ...)
+end))
+
+-- // 2. SILENT AIM STATE & DRAWINGS
+local SilentState = {
+    Enabled         = false,
+    InstantHit      = false,
+    TargetAI        = false,
+    Wallbang        = false,
+    VisibilityCheck = true,
+    AimPart         = "Head",
+    ShowFOV         = false,
+    FOVRadius       = 200,
+    FOVSegments     = 180,
+    FOVColor        = rgb(255, 255, 255),
+    FOVAlpha        = 1,
+    FOVThickness    = 1,
+    ShowTracer      = false,
+    TracerColor     = rgb(255, 255, 255),
+    TracerAlpha     = 1,
+    TracerThickness = 1,
+    target_part     = nil,
+    is_npc          = false,
+}
+
+local FOVLines   = {}
+local TracerLine = Drawing.new("Line")
+TracerLine.Thickness = 2
+TracerLine.Visible   = false
+
+local function RefreshFOVLines()
+    for _, v in ipairs(FOVLines) do v:Remove() end
+    table.clear(FOVLines)
+    for i = 1, SilentState.FOVSegments do
+        local line          = Drawing.new("Line")
+        line.Visible        = false
+        line.Thickness      = SilentState.FOVThickness
+        FOVLines[i]         = line
+    end
+end
+RefreshFOVLines()
+
+-- // 3. TARGETING LOGIC
+local function isSilentVisible(target)
+    if not SilentState.VisibilityCheck then return true end
+    local origin = Camera.CFrame.Position
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = { LocalPlayer.Character, target }
+    params.IgnoreWater = true
+
+    for _, partName in ipairs({ "Head", "HumanoidRootPart", "UpperTorso", "LowerTorso" }) do
+        local part = target:FindFirstChild(partName)
+        if part then
+            local result = workspace:Raycast(origin, part.Position - origin, params)
+            if not result or result.Instance:IsDescendantOf(target) then return true end
+        end
+    end
+    return false
+end
+
+local function getSilentTarget()
+    local closest, closestDist = nil, SilentState.FOVRadius
+    local mousePos = UserInputService:GetMouseLocation()
+
+    local AiZones = workspace:FindFirstChild("AiZones")
+    if SilentState.TargetAI and AiZones then
+        for _, zone in pairs(AiZones:GetChildren()) do
+            for _, npc in pairs(zone:GetChildren()) do
+                local part = npc:FindFirstChild(SilentState.AimPart)
+                local hum  = npc:FindFirstChildOfClass("Humanoid")
+                if part and hum and hum.Health > 0 then
+                    local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+                    if onScreen then
+                        local dist = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
+                        if dist < closestDist and isSilentVisible(npc) then
+                            closestDist = dist; closest = part; SilentState.is_npc = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for _, plr in pairs(Players:GetPlayers()) do
+        if plr == LocalPlayer or not plr.Character then continue end
+        local part = plr.Character:FindFirstChild(SilentState.AimPart)
+        local hum  = plr.Character:FindFirstChildOfClass("Humanoid")
+        if part and hum and hum.Health > 0 then
+            local sp, onScreen = Camera:WorldToViewportPoint(part.Position)
+            if onScreen then
+                local dist = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
+                if dist < closestDist and isSilentVisible(plr.Character) then
+                    closestDist = dist; closest = part; SilentState.is_npc = false
+                end
+            end
+        end
+    end
+    return closest
+end
+
+-- // 4. NAMECCALL HOOKS (UNDETECTED BYPASSES)
+local __namecall; __namecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    if checkcaller() then return __namecall(self, ...) end
+
+    local args   = { ... }
+    local method = getnamecallmethod()
+
+    if method == "InvokeServer" and self.Name == "FireProjectile"
+        and SilentState.Enabled and SilentState.InstantHit and SilentState.target_part then
+        args[3] = 0 / 0
+        return __namecall(self, unpack(args))
+    end
+
+    if method == "FireServer" and self.Name == "ProjectileInflict" then
+        local tb = debug.traceback()
+        if tb and tb:find("CharacterController") then
+            return coroutine.yield()
+        end
+        if SilentState.Enabled and SilentState.InstantHit then
+            args[4] = 0 / 0
+        end
+        return __namecall(self, unpack(args))
+    end
+
+    if method == "Raycast" and SilentState.Enabled and SilentState.InstantHit and SilentState.target_part then
+        local hitPart = SilentState.target_part
+        args[2] = hitPart.Position - args[1]
+        if SilentState.Wallbang then
+            return {
+                Instance = hitPart, Position = hitPart.Position, Normal = Vector3.new(1, 0, 0),
+                Material = hitPart.Material, Distance = (hitPart.Position - args[1]).Magnitude,
+            }
+        end
+        return __namecall(self, unpack(args))
+    end
+    return __namecall(self, ...)
+end))
+
+-- // 5. COMBAT UI SETUP (BUILDING LIKE YOUR EXAMPLE)
+local SilentAimBox = Tabs.Combat:AddLeftGroupbox('silent aim')
+local senabled = SilentAimBox:AddToggle('silent_enabled', { Text = 'enabled', Default = false })
+local acbyp    = SilentAimBox:AddLabel("client ac bypassed", false)
+local sinstant = SilentAimBox:AddToggle('silent_instanthit', { Text = 'silent aim', Default = false })
+local sai      = SilentAimBox:AddToggle('silent_targetai', { Text = 'target ai', Default = false })
+local svis     = SilentAimBox:AddToggle('silent_vischeck', { Text = 'visibility check', Default = true })
+local swall    = SilentAimBox:AddToggle('silent_wallbang', { Text = 'bullets go through wall', Default = false })
+
+local spart    = SilentAimBox:AddDropdown('silent_aimpart', { Values = { "Head", "UpperTorso", "LowerTorso", "HumanoidRootPart" }, Default = 1, Text = 'aim part' })
+
+local sfov     = SilentAimBox:AddToggle('silent_showfov', { Text = 'show fov circle', Default = false })
+sfov:AddColorPicker('silent_fov_color', { Default = rgb(255, 255, 255), Title = 'fov color', Transparency = 0 })
+local sradius  = SilentAimBox:AddSlider('silent_fov_radius', { Text = 'fov radius', Default = 200, Min = 50, Max = 800, Rounding = 0 })
+
+local ssegments = SilentAimBox:AddSlider('silent_fov_segments', { Text = 'fov segments', Default = 180, Min = 3, Max = 360, Rounding = 0 })
+
+local stracer   = SilentAimBox:AddToggle('silent_showtracer', { Text = 'show snaplines', Default = false })
+stracer:AddColorPicker('silent_tracer_color', { Default = rgb(255, 255, 255), Title = 'tracer color', Transparency = 0 })
+
+-- // 5.1 LOGIC CONNECTIONS (AFTER BUILDING UI)
+senabled:OnChanged(function() SilentState.Enabled = Toggles.silent_enabled.Value end)
+sinstant:OnChanged(function() SilentState.InstantHit = Toggles.silent_instanthit.Value end)
+sai:OnChanged(function() SilentState.TargetAI = Toggles.silent_targetai.Value end)
+svis:OnChanged(function() SilentState.VisibilityCheck = Toggles.silent_vischeck.Value end)
+swall:OnChanged(function() SilentState.Wallbang = Toggles.silent_wallbang.Value end)
+spart:OnChanged(function() SilentState.AimPart = Options.silent_aimpart.Value end)
+sradius:OnChanged(function() SilentState.FOVRadius = Options.silent_fov_radius.Value end)
+ssegments:OnChanged(function() SilentState.FOVSegments = Options.silent_fov_segments.Value RefreshFOVLines() end)
+
+sfov:OnChanged(function() SilentState.ShowFOV = Toggles.silent_showfov.Value end)
+Options.silent_fov_color:OnChanged(function() 
+    SilentState.FOVColor = Options.silent_fov_color.Value 
+    SilentState.FOVAlpha = Options.silent_fov_color.Transparency 
+end)
+
+stracer:OnChanged(function() SilentState.ShowTracer = Toggles.silent_showtracer.Value end)
+Options.silent_tracer_color:OnChanged(function() 
+    SilentState.TracerColor = Options.silent_tracer_color.Value 
+    SilentState.TracerAlpha = Options.silent_tracer_color.Transparency 
+end)
+
+-- // 6. RENDERING & HEARTBEAT
+RunService.Heartbeat:Connect(function()
+    if SilentState.Enabled then SilentState.target_part = getSilentTarget() end
+end)
+
+RunService.RenderStepped:Connect(function()
+    local mousePos = UserInputService:GetMouseLocation()
+    if SilentState.ShowFOV and SilentState.Enabled then
+        local step = (math.pi * 2) / SilentState.FOVSegments
+        for i = 1, SilentState.FOVSegments do
+            local a1, a2 = step * i, step * (i + 1)
+            local line = FOVLines[i]
+            if line then
+                line.From = mousePos + Vector2.new(math.cos(a1) * SilentState.FOVRadius, math.sin(a1) * SilentState.FOVRadius)
+                line.To   = mousePos + Vector2.new(math.cos(a2) * SilentState.FOVRadius, math.sin(a2) * SilentState.FOVRadius)
+                line.Color = SilentState.FOVColor
+                line.Transparency = 1 - SilentState.FOVAlpha
+                line.Visible = true
+            end
+        end
+    else
+        for _, v in ipairs(FOVLines) do v.Visible = false end
+    end
+
+    if SilentState.ShowTracer and SilentState.Enabled and SilentState.target_part then
+        local sp, onScreen = Camera:WorldToViewportPoint(SilentState.target_part.Position)
+        if onScreen then
+            TracerLine.From = mousePos
+            TracerLine.To   = Vector2.new(sp.X, sp.Y)
+            TracerLine.Color = SilentState.TracerColor
+            TracerLine.Transparency = 1 - SilentState.TracerAlpha
+            TracerLine.Visible = true
+        else TracerLine.Visible = false end
+    else TracerLine.Visible = false end
+end)
+
+-- // 7. GUN MODIFICATIONS STATE
+local GunMods = {
+    NoRecoil      = false,
+    NoBob         = false,
+    InstantAim    = false,
+    NoDrop        = false,
+    NoDrag        = false,
+    RapidFire     = false,
+    CrashOnReload = false,
+}
+
+-- Ammo attribute patching logic
+local function applyAmmoAttributes(ammo)
+    if not ammo or not ammo:IsA("Configuration") then return end
+    
+    local attributes = { "RecoilStrength", "ProjectileDrop", "Drag", "Spread" }
+    
+    for _, attr in next, attributes do
+        if ammo:GetAttribute(attr) ~= nil and ammo:GetAttribute("Original_" .. attr) == nil then
+            ammo:SetAttribute("Original_" .. attr, ammo:GetAttribute(attr))
+        end
+    end
+
+    if ammo:GetAttribute("RecoilStrength") then 
+        ammo:SetAttribute("RecoilStrength", GunMods.NoRecoil and 0 or ammo:GetAttribute("Original_RecoilStrength")) 
+    end
+    if ammo:GetAttribute("ProjectileDrop") then 
+        ammo:SetAttribute("ProjectileDrop", GunMods.NoDrop and 0 or ammo:GetAttribute("Original_ProjectileDrop"))   
+    end
+    if ammo:GetAttribute("Drag") then 
+        ammo:SetAttribute("Drag", GunMods.NoDrag and 0 or ammo:GetAttribute("Original_Drag")) 
+    end
+    -- Spread is forced to 0 if NoRecoil is on, or you can add a toggle for it
+    if ammo:GetAttribute("Spread") then 
+        ammo:SetAttribute("Spread", GunMods.NoRecoil and 0 or ammo:GetAttribute("Original_Spread")) 
+    end
+end
+
+-- GC Hooks for Recoil, Bob, and FireRate
+local function hookGunFunctions()
+    local success, err = pcall(function()
+        repeat task.wait(1) until getgc
+        for _, gc in next, getgc(true) do
+            if type(gc) ~= "table" then continue end
+
+            -- Recoil & Bob Hook
+            if rawget(gc, "shove") and rawget(gc, "update") then
+                local oldShove = gc.shove
+                local oldUpdate = gc.update
+                
+                gc.shove = function(...) 
+                    if GunMods.NoRecoil then return end 
+                    return oldShove(...) 
+                end
+                
+                gc.update = function(...) 
+                    if GunMods.NoBob then return Vector3.zero end 
+                    return oldUpdate(...) 
+                end
+            end
+
+            -- Aim Speed & Rapid Fire Hook
+            if rawget(gc, "updateClient") then
+                local oldUpdateClient = gc.updateClient
+                gc.updateClient = function(...)
+                    local args = { ... }
+                    local gunData = args[1]
+                    
+                    if gunData and type(gunData) == "table" then
+                        if GunMods.InstantAim and rawget(gunData, "AimInSpeed") then
+                            gunData.AimInSpeed = 100 -- High value for instant
+                            gunData.AimOutSpeed = 100
+                        end
+                        
+                        if GunMods.RapidFire and rawget(gunData, "FireRate") then
+                            gunData.FireRate = 0.01
+                            gunData.FireMode = "Auto"
+                        end
+                        
+                        if GunMods.CrashOnReload and rawget(gunData, "clientAnimationTracks") then
+                            for _, anim in next, gunData.clientAnimationTracks do
+                                if anim.Name:match("Reload") then anim:AdjustSpeed(10) end
+                            end
+                        end
+                    end
+                    return oldUpdateClient(unpack(args))
+                end
+            end
+        end
+    end)
+end
+
+-- Initialize Ammo Folder monitoring
+local ammoFolder = ReplicatedStorage:WaitForChild("AmmoTypes")
+for _, ammo in next, ammoFolder:GetChildren() do applyAmmoAttributes(ammo) end
+ammoFolder.ChildAdded:Connect(applyAmmoAttributes)
+
+-- Start GC Scanning
+task.spawn(hookGunFunctions)
+LocalPlayer.CharacterAdded:Connect(function() task.defer(hookGunFunctions) end)
+
+local GunModBox = Tabs.Main:AddLeftGroupbox('weapon mods')
+
+local gnorecoil = GunModBox:AddToggle('gun_norecoil', { Text = 'no recoil', Default = false })
+local gnobob    = GunModBox:AddToggle('gun_nobob', { Text = 'no weapon bob', Default = false })
+local ginstaim  = GunModBox:AddToggle('gun_instantaim', { Text = 'no aim animation', Default = false })
+local gnodrop   = GunModBox:AddToggle('gun_nodrop', { Text = 'no projectile drop BETA', Default = false })
+local gnodrag   = GunModBox:AddToggle('gun_nodrag', { Text = 'no bullet drag BETA', Default = false })
+local grapid = GunModBox:AddToggle('gun_rapidfire', { 
+    Text = 'rapid fire', 
+    Default = false 
+})
+
+local grapid_rate = GunModBox:AddSlider('gun_rapidfire_rate', { 
+    Text = 'fire rate (shots/sec)', 
+    Default = 10, 
+    Min = 0, 
+    Max = 20, 
+    Rounding = 1
+})
+
+-- // LOGIC CONNECTIONS
+grapid:OnChanged(function() 
+    GunMods.RapidFire = Toggles.gun_rapidfire.Value 
+end)
+
+grapid_rate:OnChanged(function()
+    GunMods.RapidFireRate = Options.gun_rapidfire_rate.Value
+end)
+local gcrash    = GunModBox:AddToggle('gun_crashreload', { Text = 'crash on reload', Default = false })
+
+-- // LOGIC CONNECTIONS
+gnorecoil:OnChanged(function() 
+    GunMods.NoRecoil = Toggles.gun_norecoil.Value 
+    for _, ammo in next, ammoFolder:GetChildren() do applyAmmoAttributes(ammo) end
+end)
+
+gnobob:OnChanged(function() 
+    GunMods.NoBob = Toggles.gun_nobob.Value 
+end)
+
+ginstaim:OnChanged(function() 
+    GunMods.InstantAim = Toggles.gun_instantaim.Value 
+end)
+
+gnodrop:OnChanged(function() 
+    GunMods.NoDrop = Toggles.gun_nodrop.Value 
+    for _, ammo in next, ammoFolder:GetChildren() do applyAmmoAttributes(ammo) end
+end)
+
+gnodrag:OnChanged(function() 
+    GunMods.NoDrag = Toggles.gun_nodrag.Value 
+    for _, ammo in next, ammoFolder:GetChildren() do applyAmmoAttributes(ammo) end
+end)
+
+grapid:OnChanged(function() 
+    GunMods.RapidFire = Toggles.gun_rapidfire.Value 
+end)
+
+gcrash:OnChanged(function() 
+    GunMods.CrashOnReload = Toggles.gun_crashreload.Value 
+end)
+
+-- Distance conversion constant (studs to meters)
+local STUDS_PER_METER = 3.5 -- Roughly 3.5 studs = 1 meter in most Roblox games
+
+-- Function to convert studs to meters
+local function StudsToMeters(studs)
+    return math.floor(studs / STUDS_PER_METER + 0.5) -- Round to nearest meter
+end
+
+-- 1. FONT REGISTRATION
+local FontLibrary = {
+    ["Comfortaa"] = "Comfortaa-Regular.ttf",
+    ["Hanken Grotesk"] = "HankenGrotesk-SemiBold.ttf",
+    ["Inter Medium"] = "Inter_28pt-Medium.ttf",
+    ["Inter SemiBold"] = "Inter_28pt-SemiBold.ttf",
+    ["Light Modern"] = "Light Modern.ttf",
+    ["Minecraftia"] = "Minecraftia-Regular.ttf",
+    ["Proggy Clean"] = "ProggyClean.ttf",
+    ["Proggy Tiny"] = "ProggyTiny.ttf",
+    ["Rubik"] = "Rubik-Regular.ttf",
+    ["Tahoma Modern Bold"] = "Tahoma-Modern-Bold.ttf",
+    ["Tahoma Modern"] = "Tahoma-Modern.ttf",
+    ["Verdana"] = "Verdana-Font.ttf",
+    ["FS Tahoma 8px"] = "fs-tahoma-8px.ttf",
+    ["Open Sans PX"] = "open-sans-px.ttf",
+    ["Smallest Pixel"] = "smallest_pixel-7.ttf",
+    ["Tahoma Bold"] = "tahoma_bold.ttf"
+}
+
+local LoadedFonts = {}
+for Name, FileName in pairs(FontLibrary) do
+    local success, data = pcall(function() 
+        local url = "https://github.com/i77lhm/storage/raw/main/fonts/" .. FileName
+        if not isfile(FileName) then writefile(FileName, game:HttpGet(url)) end
+        local cfg = {name = Name, faces = {{name = "Normal", weight = 400, style = "Normal", assetId = getcustomasset(FileName)}}}
+        writefile(Name .. ".font", HttpService:JSONEncode(cfg))
+        return Font.new(getcustomasset(Name .. ".font"))
+    end)
+    LoadedFonts[Name] = success and data or Font.fromEnum(Enum.Font.RobotoMono)
+end
+
+local VisualsBox = Tabs.Visuals:AddLeftGroupbox('player esp')
+local AIBox = Tabs.Visuals:AddLeftGroupbox('ai esp')
+local ItemBox = Tabs.Visuals:AddLeftGroupbox('item esp')
+local CorpseBox = Tabs.Visuals:AddLeftGroupbox('corpse esp')
+local ExtractBox = Tabs.Visuals:AddLeftGroupbox('extract esp')
+
+-- PLAYER ESP SECTION
+VisualsBox:AddToggle('EspMaster', { Text = 'enable esp', Default = false })
+VisualsBox:AddSlider('FadeSpeed', { Text = 'fade speed', Default = 5, Min = 1, Max = 15, Rounding = 0 })
+VisualsBox:AddSlider('TextSize', { Text = 'text size', Default = 12, Min = 8, Max = 24, Rounding = 0 })
+VisualsBox:AddSlider('HealthBarThickness', { Text = 'healthbar thickness', Default = 1, Min = 1, Max = 10, Rounding = 0 })
+VisualsBox:AddSlider('HealthBarGap', { Text = 'healthbar gap', Default = 6, Min = 1, Max = 20, Rounding = 0 })
+
+-- FONT DROPDOWN
+local FontList = {}; for n in pairs(FontLibrary) do table.insert(FontList, n) end; table.sort(FontList)
+VisualsBox:AddDropdown('EspFont', { 
+    Values = FontList, 
+    Default = "Proggy Clean", 
+    Text = 'esp font',
+    Callback = function(Value)
+        local NewFont = LoadedFonts[Value]
+        for _, Data in pairs(ESP_CACHE) do
+            for _, Label in pairs(Data.Labels) do
+                Label.FontFace = NewFont
+            end
+        end
+    end
+})
+
+-- BOX & FILL
+local BoxToggle = VisualsBox:AddToggle('ShowBox', { Text = 'bounding box', Default = false })
+BoxToggle:AddColorPicker('BoxColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'box color' })
+BoxToggle:AddColorPicker('BoxOutlineColor', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'box outline' })
+
+local FillToggle = VisualsBox:AddToggle('ShowFill', { Text = 'box fill', Default = false })
+FillToggle:AddColorPicker('FillColor', { Default = Color3.new(1,1,1), Transparency = 0.5, Title = 'fill color' })
+
+-- NAME
+local NameToggle = VisualsBox:AddToggle('ShowName', { Text = 'names', Default = false })
+NameToggle:AddColorPicker('NameColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'name color' })
+NameToggle:AddColorPicker('NameStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'name outline' })
+VisualsBox:AddToggle('ShowDisplayName', { Text = 'use display names', Default = false })
+
+-- DISTANCE
+local DistToggle = VisualsBox:AddToggle('ShowDist', { Text = 'distance', Default = false })
+DistToggle:AddColorPicker('DistColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'distance color' })
+DistToggle:AddColorPicker('DistStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'distance outline' })
+
+-- KDR
+local KDRToggle = VisualsBox:AddToggle('ShowKDR', { Text = 'kdr', Default = false })
+KDRToggle:AddColorPicker('KDRColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'kdr color' })
+KDRToggle:AddColorPicker('KDRStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'kdr outline' })
+
+-- HEALTH BAR
+local HealthBarToggle = VisualsBox:AddToggle('ShowHealthBar', { Text = 'health bar', Default = false })
+HealthBarToggle:AddColorPicker('HealthBarColor', { Default = Color3.new(0,1,0), Transparency = 0, Title = 'hp bar color' })
+HealthBarToggle:AddColorPicker('HealthBarOutline', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'hp bar outline' })
+local HealthBarDynamicToggle = VisualsBox:AddToggle('HealthBarDynamic', { Text = 'dynamic hp bar color', Default = false })
+HealthBarDynamicToggle:AddColorPicker('HealthBarHighColor', { Default = Color3.new(0,1,0), Transparency = 0, Title = 'high hp color' })
+HealthBarDynamicToggle:AddColorPicker('HealthBarLowColor', { Default = Color3.new(1,0,0), Transparency = 0, Title = 'low hp color' })
+
+-- HEALTH TEXT
+local HealthTextToggle = VisualsBox:AddToggle('ShowHealthText', { Text = 'health text', Default = false })
+HealthTextToggle:AddColorPicker('HealthTextColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'health color' })
+HealthTextToggle:AddColorPicker('HealthTextStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'health outline' })
+local HealthTextDynamicToggle = VisualsBox:AddToggle('HealthTextDynamic', { Text = 'dynamic health color', Default = false })
+HealthTextDynamicToggle:AddColorPicker('HealthTextHighColor', { Default = Color3.new(0,1,0), Transparency = 0, Title = 'high hp color' })
+HealthTextDynamicToggle:AddColorPicker('HealthTextLowColor', { Default = Color3.new(1,0,0), Transparency = 0, Title = 'low hp color' })
+VisualsBox:AddToggle('HealthTextFollowBar', { Text = 'health text follow bar', Default = false })
+
+-- CHAMS (HIGHLIGHT)
+local ChamsToggle = VisualsBox:AddToggle('ShowChams', { Text = 'chams (highlight)', Default = false })
+ChamsToggle:AddColorPicker('ChamsFillColor', { Default = Color3.new(1,0,0), Transparency = 0.5, Title = 'fill color' })
+ChamsToggle:AddColorPicker('ChamsOutlineColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'outline color' })
+VisualsBox:AddToggle('ChamsAlwaysOccluded', { Text = 'chams occluded', Default = false })
+
+-- AI ESP SECTION
+AIBox:AddToggle('AIEspMaster', { Text = 'enable ai esp', Default = false })
+AIBox:AddInput('AIFilter', { Default = '', Numeric = false, Finished = false, Text = 'ai filter', Tooltip = 'filter by AI name (Bandit, etc.)' })
+AIBox:AddSlider('AIFadeSpeed', { Text = 'ai fade speed', Default = 5, Min = 1, Max = 15, Rounding = 0 })
+AIBox:AddSlider('AITextSize', { Text = 'ai text size', Default = 12, Min = 8, Max = 24, Rounding = 0 })
+AIBox:AddSlider('AIHealthBarThickness', { Text = 'ai healthbar thickness', Default = 1, Min = 1, Max = 10, Rounding = 0 })
+AIBox:AddSlider('AIHealthBarGap', { Text = 'ai healthbar gap', Default = 6, Min = 1, Max = 20, Rounding = 0 })
+
+local AINameToggle = AIBox:AddToggle('ShowAIName', { Text = 'ai names', Default = false })
+AINameToggle:AddColorPicker('AINameColor', { Default = Color3.new(1,1.1,0), Transparency = 0, Title = 'name color' })
+AINameToggle:AddColorPicker('AINameStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'name outline' })
+
+local AIDistToggle = AIBox:AddToggle('ShowAIDist', { Text = 'ai distance', Default = false })
+AIDistToggle:AddColorPicker('AIDistColor', { Default = Color3.new(1,1.1,0), Transparency = 0, Title = 'distance color' })
+AIDistToggle:AddColorPicker('AIDistStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'distance outline' })
+
+local AIHealthToggle = AIBox:AddToggle('ShowAIHealth', { Text = 'ai health text', Default = false })
+AIHealthToggle:AddColorPicker('AIHealthColor', { Default = Color3.new(1,1.1,0), Transparency = 0, Title = 'health color' })
+AIHealthToggle:AddColorPicker('AIHealthStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'health outline' })
+AIBox:AddToggle('AIHealthTextFollowBar', { Text = 'ai health text follow bar', Default = false })
+
+local AIHealthBarToggle = AIBox:AddToggle('ShowAIHealthBar', { Text = 'ai health bar', Default = false })
+AIHealthBarToggle:AddColorPicker('AIHealthBarColor', { Default = Color3.new(0,1,0), Transparency = 0, Title = 'hp bar color' })
+AIHealthBarToggle:AddColorPicker('AIHealthBarOutline', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'hp bar outline' })
+
+local AIHealthBarDynamicToggle = AIBox:AddToggle('AIHealthBarDynamic', { Text = 'dynamic ai hp bar', Default = false })
+AIHealthBarDynamicToggle:AddColorPicker('AIHealthBarHighColor', { Default = Color3.new(0,1,0), Transparency = 0, Title = 'high hp color' })
+AIHealthBarDynamicToggle:AddColorPicker('AIHealthBarLowColor', { Default = Color3.new(1,0,0), Transparency = 0, Title = 'low hp color' })
+
+local AIBoxToggle = AIBox:AddToggle('ShowAIBox', { Text = 'ai bounding box', Default = false })
+AIBoxToggle:AddColorPicker('AIBoxColor', { Default = Color3.new(1,1.1,0), Transparency = 0, Title = 'box color' })
+AIBoxToggle:AddColorPicker('AIBoxOutlineColor', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'box outline' })
+
+local AIFillToggle = AIBox:AddToggle('ShowAIFill', { Text = 'ai box fill', Default = false })
+AIFillToggle:AddColorPicker('AIFillColor', { Default = Color3.new(1,1.1,0), Transparency = 0.5, Title = 'fill color' })
+
+-- AI CHAMS (HIGHLIGHT)
+local AIChamsToggle = AIBox:AddToggle('ShowAIChams', { Text = 'ai chams (highlight)', Default = false })
+AIChamsToggle:AddColorPicker('AIChamsFillColor', { Default = Color3.new(1,1.1,0), Transparency = 0.5, Title = 'fill color' })
+AIChamsToggle:AddColorPicker('AIChamsOutlineColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'outline color' })
+AIBox:AddToggle('AIChamsAlwaysOccluded', { Text = 'ai chams always occluded', Default = false })
+
+local AIFontList = {}; for n in pairs(FontLibrary) do table.insert(AIFontList, n) end; table.sort(AIFontList)
+AIBox:AddDropdown('AIEspFont', { 
+    Values = AIFontList, 
+    Default = "Proggy Clean", 
+    Text = 'ai font',
+    Callback = function(Value)
+        local NewFont = LoadedFonts[Value]
+        for _, Data in pairs(AI_ESP_CACHE) do
+            for _, Label in pairs(Data.Labels) do
+                Label.FontFace = NewFont
+            end
+        end
+    end
+})
+
+-- ITEM ESP SECTION
+ItemBox:AddToggle('ItemEspMaster', { Text = 'enable item esp', Default = false })
+ItemBox:AddInput('ItemFilter', { Default = 'KeyChain', Numeric = false, Finished = false, Text = 'item filter', Tooltip = 'leave blank to show all items' })
+
+local ItemNameToggle = ItemBox:AddToggle('ShowItemName', { Text = 'item names', Default = false })
+ItemNameToggle:AddColorPicker('ItemNameColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'name color' })
+ItemNameToggle:AddColorPicker('ItemNameStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'name outline' })
+
+local ItemDistToggle = ItemBox:AddToggle('ShowItemDist', { Text = 'item distance', Default = false })
+ItemDistToggle:AddColorPicker('ItemDistColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'distance color' })
+ItemDistToggle:AddColorPicker('ItemDistStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'distance outline' })
+
+ItemBox:AddSlider('ItemFadeSpeed', { Text = 'item fade speed', Default = 5, Min = 1, Max = 15, Rounding = 0 })
+ItemBox:AddSlider('ItemTextSize', { Text = 'item text size', Default = 12, Min = 8, Max = 24, Rounding = 0 })
+
+local ItemFontList = {}; for n in pairs(FontLibrary) do table.insert(ItemFontList, n) end; table.sort(ItemFontList)
+ItemBox:AddDropdown('ItemEspFont', { 
+    Values = ItemFontList, 
+    Default = "Proggy Clean", 
+    Text = 'item font',
+    Callback = function(Value)
+        local NewFont = LoadedFonts[Value]
+        for _, Data in pairs(ITEM_ESP_CACHE) do
+            for _, Label in pairs(Data.Labels) do
+                Label.FontFace = NewFont
+            end
+        end
+    end
+})
+
+-- CORPSE ESP SECTION
+CorpseBox:AddToggle('CorpseEspMaster', { Text = 'enable corpse esp', Default = false })
+CorpseBox:AddInput('CorpseUsernameFilter', { Default = '', Numeric = false, Finished = false, Text = 'username filter', Tooltip = 'leave blank to show all corpses' })
+
+local CorpseNameToggle = CorpseBox:AddToggle('ShowCorpseName', { Text = 'corpse names', Default = false })
+CorpseNameToggle:AddColorPicker('CorpseNameColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'name color' })
+CorpseNameToggle:AddColorPicker('CorpseNameStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'name outline' })
+
+local CorpseDistToggle = CorpseBox:AddToggle('ShowCorpseDist', { Text = 'corpse distance', Default = false })
+CorpseDistToggle:AddColorPicker('CorpseDistColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'distance color' })
+CorpseDistToggle:AddColorPicker('CorpseDistStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'distance outline' })
+
+CorpseBox:AddSlider('CorpseFadeSpeed', { Text = 'corpse fade speed', Default = 5, Min = 1, Max = 15, Rounding = 0 })
+CorpseBox:AddSlider('CorpseTextSize', { Text = 'corpse text size', Default = 12, Min = 8, Max = 24, Rounding = 0 })
+
+local CorpseFontList = {}; for n in pairs(FontLibrary) do table.insert(CorpseFontList, n) end; table.sort(CorpseFontList)
+CorpseBox:AddDropdown('CorpseEspFont', { 
+    Values = CorpseFontList, 
+    Default = "Proggy Clean", 
+    Text = 'corpse font',
+    Callback = function(Value)
+        local NewFont = LoadedFonts[Value]
+        for _, Data in pairs(CORPSE_ESP_CACHE) do
+            for _, Label in pairs(Data.Labels) do
+                Label.FontFace = NewFont
+            end
+        end
+    end
+})
+
+-- EXTRACT ESP SECTION
+ExtractBox:AddToggle('ExtractEspMaster', { Text = 'enable extract esp', Default = false })
+ExtractBox:AddInput('ExtractFilter', { Default = '', Numeric = false, Finished = false, Text = 'extract filter', Tooltip = 'filter by extract name' })
+
+local ExtractNameToggle = ExtractBox:AddToggle('ShowExtractName', { Text = 'extract names', Default = false })
+ExtractNameToggle:AddColorPicker('ExtractNameColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'name color' })
+ExtractNameToggle:AddColorPicker('ExtractNameStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'name outline' })
+
+local ExtractDistToggle = ExtractBox:AddToggle('ShowExtractDist', { Text = 'extract distance', Default = false })
+ExtractDistToggle:AddColorPicker('ExtractDistColor', { Default = Color3.new(1,1,1), Transparency = 0, Title = 'distance color' })
+ExtractDistToggle:AddColorPicker('ExtractDistStroke', { Default = Color3.new(0,0,0), Transparency = 0, Title = 'distance outline' })
+
+ExtractBox:AddSlider('ExtractFadeSpeed', { Text = 'extract fade speed', Default = 5, Min = 1, Max = 15, Rounding = 0 })
+ExtractBox:AddSlider('ExtractTextSize', { Text = 'extract text size', Default = 12, Min = 8, Max = 24, Rounding = 0 })
+
+local ExtractFontList = {}; for n in pairs(FontLibrary) do table.insert(ExtractFontList, n) end; table.sort(ExtractFontList)
+ExtractBox:AddDropdown('ExtractEspFont', { 
+    Values = ExtractFontList, 
+    Default = "Proggy Clean", 
+    Text = 'extract font',
+    Callback = function(Value)
+        local NewFont = LoadedFonts[Value]
+        for _, Data in pairs(EXTRACT_ESP_CACHE) do
+            for _, Label in pairs(Data.Labels) do
+                Label.FontFace = NewFont
+            end
+        end
+    end
+})
+
+-- 3. ESP SETUP
+local ScreenGui = Instance.new("ScreenGui", game:GetService("CoreGui"))
+ScreenGui.IgnoreGuiInset = true
+
+ESP_CACHE = {}
+ITEM_ESP_CACHE = {}
+CORPSE_ESP_CACHE = {}
+AI_ESP_CACHE = {}
+EXTRACT_ESP_CACHE = {}  -- New Extract ESP cache
+
+local function CreateESP(Player)
+    local drawings = {
+        BoxOutline = Drawing.new("Square"),
+        BoxInner = Drawing.new("Square"),
+        Box = Drawing.new("Square"),
+        BoxFill = Drawing.new("Square"),
+        HealthBarOutline = Drawing.new("Square"),
+        HealthBarFill = Drawing.new("Square")
+    }
+    
+    local labels = {
+        Name = Instance.new("TextLabel", ScreenGui),
+        Distance = Instance.new("TextLabel", ScreenGui),
+        Health = Instance.new("TextLabel", ScreenGui),
+        KDR = Instance.new("TextLabel", ScreenGui)
+    }
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ESP_Highlight"
+    highlight.FillTransparency = 0.5
+    highlight.OutlineTransparency = 0
+    highlight.FillColor = Color3.new(1, 0, 0)
+    highlight.OutlineColor = Color3.new(1, 1, 1)
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Enabled = false
+    
+    drawings.BoxFill.Filled = true
+    drawings.HealthBarFill.Filled = true
+    
+    drawings.HealthBarOutline.ZIndex = 1
+    drawings.HealthBarFill.ZIndex = 3
+
+    for _, label in pairs(labels) do
+        label.BackgroundTransparency = 1
+        label.TextStrokeTransparency = 0
+        label.TextSize = 12
+        label.Visible = false
+        label.FontFace = LoadedFonts["Proggy Clean"]
+        label.Size = UDim2.new(0, 200, 0, 15)
+        label.ZIndex = 5
+    end
+    
+    labels.Health.Size = UDim2.new(0, 50, 0, 15)
+    labels.Health.TextXAlignment = Enum.TextXAlignment.Right
+
+    ESP_CACHE[Player] = {Drawings = drawings, Labels = labels, Highlight = highlight, FadeAlpha = 0}
+end
+
+local function CreateItemESP(Item)
+    local labels = {
+        Name = Instance.new("TextLabel", ScreenGui),
+        Distance = Instance.new("TextLabel", ScreenGui)
+    }
+    
+    for _, label in pairs(labels) do
+        label.BackgroundTransparency = 1
+        label.TextStrokeTransparency = 0
+        label.TextSize = 12
+        label.Visible = false
+        label.FontFace = LoadedFonts["Proggy Clean"]
+        label.Size = UDim2.new(0, 200, 0, 15)
+        label.ZIndex = 5
+    end
+    
+    ITEM_ESP_CACHE[Item] = {Labels = labels, FadeAlpha = 0}
+end
+
+local function CreateCorpseESP(Corpse)
+    local labels = {
+        Name = Instance.new("TextLabel", ScreenGui),
+        Distance = Instance.new("TextLabel", ScreenGui)
+    }
+    
+    for _, label in pairs(labels) do
+        label.BackgroundTransparency = 1
+        label.TextStrokeTransparency = 0
+        label.TextSize = 12
+        label.Visible = false
+        label.FontFace = LoadedFonts["Proggy Clean"]
+        label.Size = UDim2.new(0, 200, 0, 15)
+        label.ZIndex = 5
+    end
+    
+    CORPSE_ESP_CACHE[Corpse] = {Labels = labels, FadeAlpha = 0}
+end
+
+local function CreateAIESP(AI)
+    local drawings = {
+        BoxOutline = Drawing.new("Square"),
+        BoxInner = Drawing.new("Square"),
+        Box = Drawing.new("Square"),
+        BoxFill = Drawing.new("Square"),
+        HealthBarOutline = Drawing.new("Square"),
+        HealthBarFill = Drawing.new("Square")
+    }
+    
+    local labels = {
+        Name = Instance.new("TextLabel", ScreenGui),
+        Distance = Instance.new("TextLabel", ScreenGui),
+        Health = Instance.new("TextLabel", ScreenGui)
+    }
+    
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "AI_Highlight"
+    highlight.FillTransparency = 0.5
+    highlight.OutlineTransparency = 0
+    highlight.FillColor = Color3.new(1, 0.5, 0)
+    highlight.OutlineColor = Color3.new(1, 1, 1)
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Enabled = false
+    
+    drawings.BoxFill.Filled = true
+    drawings.HealthBarFill.Filled = true
+    
+    drawings.HealthBarOutline.ZIndex = 1
+    drawings.HealthBarFill.ZIndex = 3
+
+    for _, label in pairs(labels) do
+        label.BackgroundTransparency = 1
+        label.TextStrokeTransparency = 0
+        label.TextSize = 12
+        label.Visible = false
+        label.FontFace = LoadedFonts["Proggy Clean"]
+        label.Size = UDim2.new(0, 200, 0, 15)
+        label.ZIndex = 5
+    end
+    
+    labels.Health.Size = UDim2.new(0, 50, 0, 15)
+    labels.Health.TextXAlignment = Enum.TextXAlignment.Right
+
+    AI_ESP_CACHE[AI] = {Drawings = drawings, Labels = labels, Highlight = highlight, FadeAlpha = 0}
+end
+
+-- New function for Extract ESP
+local function CreateExtractESP(Extract)
+    local labels = {
+        Name = Instance.new("TextLabel", ScreenGui),
+        Distance = Instance.new("TextLabel", ScreenGui)
+    }
+    
+    for _, label in pairs(labels) do
+        label.BackgroundTransparency = 1
+        label.TextStrokeTransparency = 0
+        label.TextSize = 12
+        label.Visible = false
+        label.FontFace = LoadedFonts["Proggy Clean"]
+        label.Size = UDim2.new(0, 200, 0, 15)
+        label.ZIndex = 5
+    end
+    
+    EXTRACT_ESP_CACHE[Extract] = {Labels = labels, FadeAlpha = 0}
+end
+
+-- 4. BOUNDING BOX LOGIC
+local function GetBoundingBox(character)
+    local minX, minY, maxX, maxY = math.huge, math.huge, -math.huge, -math.huge
+    for _, obj in pairs(character:GetChildren()) do
+        if obj:IsA("BasePart") or (obj:IsA("Accessory") and obj:FindFirstChild("Handle")) then
+            local part = obj:IsA("BasePart") and obj or obj.Handle
+            local size = part.Size / 2
+            local corners = {
+                part.CFrame * CFrame.new(size.X, size.Y, size.Z),
+                part.CFrame * CFrame.new(-size.X, -size.Y, -size.Z),
+                part.CFrame * CFrame.new(size.X, -size.Y, size.Z),
+                part.CFrame * CFrame.new(size.X, size.Y, -size.Z),
+                part.CFrame * CFrame.new(-size.X, -size.Y, size.Z),
+                part.CFrame * CFrame.new(size.X, -size.Y, -size.Z),
+                part.CFrame * CFrame.new(-size.X, size.Y, -size.Z),
+                part.CFrame * CFrame.new(-size.X, -size.Y, -size.Z)
+            }
+            for _, corner in pairs(corners) do
+                local screenPos, onScreen = Camera:WorldToViewportPoint(corner.Position)
+                if onScreen then
+                    minX = math.min(minX, screenPos.X)
+                    minY = math.min(minY, screenPos.Y)
+                    maxX = math.max(maxX, screenPos.X)
+                    maxY = math.max(maxY, screenPos.Y)
+                end
+            end
+        end
+    end
+    return Vector2.new(math.floor(minX), math.floor(minY)), Vector2.new(math.floor(maxX - minX), math.floor(maxY - minY))
+end
+
+-- 4.5. KDR CALCULATION
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local function GetPlayerKDR(PlayerName)
+    local success, result = pcall(function()
+        local PlayerFolder = ReplicatedStorage:FindFirstChild("Players")
+        if not PlayerFolder then return "N/A" end
+        
+        local PlayerStats = PlayerFolder:FindFirstChild(PlayerName)
+        if not PlayerStats then return "N/A" end
+        
+        local Status = PlayerStats:FindFirstChild("Status")
+        if not Status then return "N/A" end
+        
+        local Journey = Status:FindFirstChild("Journey")
+        if not Journey then return "N/A" end
+        
+        local Statistics = Journey:FindFirstChild("Statistics")
+        if not Statistics then return "N/A" end
+        
+        local Kills = Statistics:GetAttribute("Kills") or 0
+        local Deaths = Statistics:GetAttribute("Deaths") or 0
+        
+        if Kills == 0 and Deaths == 0 then
+            return "New"
+        elseif Deaths == 0 then
+            return string.format("%.2f", Kills)
+        else
+            local kdr = Kills / Deaths
+            return string.format("%.2f", kdr)
+        end
+    end)
+    
+    return success and result or "N/A"
+end
+
+-- 4.6. COLOR LERP FOR GRADIENT
+local function LerpColor(color1, color2, alpha)
+    return Color3.new(
+        color1.R + (color2.R - color1.R) * alpha,
+        color1.G + (color2.G - color1.G) * alpha,
+        color1.B + (color2.B - color1.B) * alpha
+    )
+end
+
+-- 4.7. FILTER HELPERS
+local function ShouldRenderItem(ItemName)
+    if not Options.ItemFilter then return true end
+    local filterText = Options.ItemFilter.Value
+    if filterText == "" then return true end
+    return string.find(string.lower(ItemName), string.lower(filterText)) ~= nil
+end
+
+local function ShouldRenderCorpse(CorpseName)
+    if not Options.CorpseUsernameFilter then return true end
+    local filterText = Options.CorpseUsernameFilter.Value
+    if filterText == "" then return true end
+    return string.find(string.lower(CorpseName), string.lower(filterText)) ~= nil
+end
+
+local function ShouldRenderAI(AIName)
+    if not Options.AIFilter then return true end
+    local filterText = Options.AIFilter.Value
+    if filterText == "" then return true end
+    return string.find(string.lower(AIName), string.lower(filterText)) ~= nil
+end
+
+local function ShouldRenderExtract(ExtractName)
+    if not Options.ExtractFilter then return true end
+    local filterText = Options.ExtractFilter.Value
+    if filterText == "" then return true end
+    return string.find(string.lower(ExtractName), string.lower(filterText)) ~= nil
+end
+
+local function GetItemPosition(Item)
+    if Item:IsA("Model") then
+        return Item:GetPivot().Position
+    elseif Item:IsA("BasePart") then
+        return Item.Position
+    elseif Item.PrimaryPart then
+        return Item.PrimaryPart.Position
+    end
+    return nil
+end
+
+-- 5. PLAYER ESP RENDER LOOP
+RunService.RenderStepped:Connect(function(dt)
+    if not (Toggles and Toggles.EspMaster and Options.BoxColor) then return end
+    
+    for Player, Data in pairs(ESP_CACHE) do
+        local Char = Player.Character
+        local Hum = Char and Char:FindFirstChildOfClass("Humanoid")
+        local IsAlive = (Char and Hum and Hum.Health > 0)
+        
+        if Toggles.EspMaster.Value and IsAlive and Player ~= LocalPlayer then
+            Data.FadeAlpha = math.clamp(Data.FadeAlpha + (dt * Options.FadeSpeed.Value), 0, 1)
+        else
+            Data.FadeAlpha = math.clamp(Data.FadeAlpha - (dt * Options.FadeSpeed.Value), 0, 1)
+        end
+
+        if Data.FadeAlpha > 0 then
+            local BoxPos, BoxSize = GetBoundingBox(Char or {GetChildren = function() return {} end})
+            local GlobalAlpha = Data.FadeAlpha
+            
+            if BoxPos.X ~= math.huge then
+                local boxTrans = (1 - Options.BoxColor.Transparency) * GlobalAlpha
+                local outTrans = (1 - Options.BoxOutlineColor.Transparency) * GlobalAlpha
+                local fillTrans = (1 - Options.FillColor.Transparency) * GlobalAlpha
+
+                Data.Drawings.BoxOutline.Visible = Toggles.ShowBox.Value
+                Data.Drawings.BoxOutline.Transparency = outTrans
+                Data.Drawings.BoxOutline.Size = BoxSize + Vector2.new(2, 2)
+                Data.Drawings.BoxOutline.Position = BoxPos - Vector2.new(1, 1)
+                Data.Drawings.BoxOutline.Color = Options.BoxOutlineColor.Value
+
+                Data.Drawings.Box.Visible = Toggles.ShowBox.Value
+                Data.Drawings.Box.Transparency = boxTrans
+                Data.Drawings.Box.Size = BoxSize
+                Data.Drawings.Box.Position = BoxPos
+                Data.Drawings.Box.Color = Options.BoxColor.Value
+
+                Data.Drawings.BoxInner.Visible = Toggles.ShowBox.Value
+                Data.Drawings.BoxInner.Transparency = outTrans
+                Data.Drawings.BoxInner.Size = BoxSize - Vector2.new(2, 2)
+                Data.Drawings.BoxInner.Position = BoxPos + Vector2.new(1, 1)
+                Data.Drawings.BoxInner.Color = Options.BoxOutlineColor.Value
+
+                Data.Drawings.BoxFill.Visible = Toggles.ShowFill.Value
+                Data.Drawings.BoxFill.Size = BoxSize
+                Data.Drawings.BoxFill.Position = BoxPos
+                Data.Drawings.BoxFill.Color = Options.FillColor.Value
+                Data.Drawings.BoxFill.Transparency = fillTrans
+
+                local hpPct = Hum and math.clamp(Hum.Health / Hum.MaxHealth, 0, 1) or 0
+                local midX = math.floor(BoxPos.X + (BoxSize.X / 2))
+                
+                local currentTextSize = Options.TextSize and Options.TextSize.Value or 12
+                local currentFont = LoadedFonts[Options.EspFont and Options.EspFont.Value or "Proggy Clean"]
+                
+                for _, Label in pairs(Data.Labels) do
+                    Label.TextSize = currentTextSize
+                    Label.FontFace = currentFont
+                end
+
+                -- HEALTH BAR
+                local hpBarWidth = Options.HealthBarThickness and Options.HealthBarThickness.Value or 1
+                local hpBarGap = Options.HealthBarGap and Options.HealthBarGap.Value or 6
+                local hpBarHeight = BoxSize.Y
+                local hpBarX = BoxPos.X - hpBarWidth - hpBarGap
+                local hpBarY = BoxPos.Y
+                local hpBarFillHeight = math.floor(hpBarHeight * hpPct)
+
+                Data.Drawings.HealthBarOutline.Visible = Toggles.ShowHealthBar.Value
+                Data.Drawings.HealthBarOutline.Size = Vector2.new(hpBarWidth + 2, hpBarHeight + 2)
+                Data.Drawings.HealthBarOutline.Position = Vector2.new(hpBarX - 1, hpBarY - 1)
+                Data.Drawings.HealthBarOutline.Color = Options.HealthBarOutline.Value
+                Data.Drawings.HealthBarOutline.Transparency = (1 - Options.HealthBarOutline.Transparency) * GlobalAlpha
+                Data.Drawings.HealthBarOutline.Filled = false
+
+                local hpBarColor
+                if Toggles.HealthBarDynamic.Value then
+                    local highColor = Options.HealthBarHighColor.Value
+                    local lowColor = Options.HealthBarLowColor.Value
+                    hpBarColor = LerpColor(lowColor, highColor, hpPct)
+                else
+                    hpBarColor = Options.HealthBarColor.Value
+                end
+                Data.Drawings.HealthBarFill.Visible = Toggles.ShowHealthBar.Value and hpBarFillHeight > 0
+                Data.Drawings.HealthBarFill.Size = Vector2.new(hpBarWidth, hpBarFillHeight)
+                Data.Drawings.HealthBarFill.Position = Vector2.new(hpBarX, hpBarY + (hpBarHeight - hpBarFillHeight))
+                Data.Drawings.HealthBarFill.Color = hpBarColor
+                Data.Drawings.HealthBarFill.Transparency = (1 - Options.HealthBarColor.Transparency) * GlobalAlpha
+
+                Data.Labels.Name.Visible = Toggles.ShowName.Value
+                Data.Labels.Name.Text = (Toggles.ShowDisplayName and Toggles.ShowDisplayName.Value) and (Player.DisplayName or Player.Name) or Player.Name
+                Data.Labels.Name.TextColor3 = Options.NameColor.Value
+                Data.Labels.Name.TextStrokeColor3 = Options.NameStroke.Value
+                Data.Labels.Name.TextTransparency = 1 - ((1 - Options.NameColor.Transparency) * GlobalAlpha)
+                Data.Labels.Name.TextStrokeTransparency = 1 - ((1 - Options.NameStroke.Transparency) * GlobalAlpha)
+                Data.Labels.Name.Position = UDim2.new(0, midX - 100, 0, BoxPos.Y - 16)
+
+                Data.Labels.Health.Visible = Toggles.ShowHealthText.Value
+                Data.Labels.Health.Text = Hum and tostring(math.floor(Hum.Health)) or "0"
+                if Toggles.HealthTextDynamic.Value then
+                    local highColor = Options.HealthTextHighColor.Value
+                    local lowColor = Options.HealthTextLowColor.Value
+                    Data.Labels.Health.TextColor3 = LerpColor(lowColor, highColor, hpPct)
+                else
+                    Data.Labels.Health.TextColor3 = Options.HealthTextColor.Value
+                end
+                Data.Labels.Health.TextStrokeColor3 = Options.HealthTextStroke.Value
+                Data.Labels.Health.TextTransparency = 1 - ((1 - Options.HealthTextColor.Transparency) * GlobalAlpha)
+                Data.Labels.Health.TextStrokeTransparency = 1 - ((1 - Options.HealthTextStroke.Transparency) * GlobalAlpha)
+                
+                if Toggles.HealthTextFollowBar.Value then
+                    Data.Labels.Health.Position = UDim2.new(0, hpBarX - 55, 0, hpBarY - 2)
+                else
+                    Data.Labels.Health.Position = UDim2.new(0, BoxPos.X - 55, 0, BoxPos.Y - 2)
+                end
+
+                Data.Labels.Distance.Visible = Toggles.ShowDist.Value
+                if Char and Char.PrimaryPart then
+                    local studs = (Char.PrimaryPart.Position - Camera.CFrame.Position).Magnitude
+                    Data.Labels.Distance.Text = StudsToMeters(studs) .. "m"
+                end
+                Data.Labels.Distance.TextColor3 = Options.DistColor.Value
+                Data.Labels.Distance.TextStrokeColor3 = Options.DistStroke.Value
+                Data.Labels.Distance.TextTransparency = 1 - ((1 - Options.DistColor.Transparency) * GlobalAlpha)
+                Data.Labels.Distance.TextStrokeTransparency = 1 - ((1 - Options.DistStroke.Transparency) * GlobalAlpha)
+                Data.Labels.Distance.Position = UDim2.new(0, midX - 100, 0, BoxPos.Y + BoxSize.Y + 1)
+
+                Data.Labels.KDR.Visible = Toggles.ShowKDR.Value
+                local kdrValue = GetPlayerKDR(Player.Name)
+                Data.Labels.KDR.Text = "KDR: " .. kdrValue
+                Data.Labels.KDR.TextColor3 = Options.KDRColor.Value
+                Data.Labels.KDR.TextStrokeColor3 = Options.KDRStroke.Value
+                Data.Labels.KDR.TextTransparency = 1 - ((1 - Options.KDRColor.Transparency) * GlobalAlpha)
+                Data.Labels.KDR.TextStrokeTransparency = 1 - ((1 - Options.KDRStroke.Transparency) * GlobalAlpha)
+                Data.Labels.KDR.TextXAlignment = Enum.TextXAlignment.Left
+                Data.Labels.KDR.Position = UDim2.new(0, BoxPos.X + BoxSize.X + 6, 0, BoxPos.Y - 2)
+
+                if Toggles.ShowChams and Toggles.ShowChams.Value and Char then
+                    Data.Highlight.Parent = Char
+                    Data.Highlight.Enabled = true
+                    Data.Highlight.FillColor = Options.ChamsFillColor.Value
+                    Data.Highlight.OutlineColor = Options.ChamsOutlineColor.Value
+                    Data.Highlight.FillTransparency = Options.ChamsFillColor.Transparency
+                    Data.Highlight.OutlineTransparency = Options.ChamsOutlineColor.Transparency
+                    Data.Highlight.DepthMode = (Toggles.ChamsAlwaysOccluded and Toggles.ChamsAlwaysOccluded.Value) 
+                        and Enum.HighlightDepthMode.AlwaysOnTop 
+                        or Enum.HighlightDepthMode.Occluded
+                else
+                    Data.Highlight.Enabled = false
+                    Data.Highlight.Parent = nil
+                end
+            else
+                for _, v in pairs(Data.Drawings) do v.Visible = false end
+                for _, v in pairs(Data.Labels) do v.Visible = false end
+            end
+        else
+            for _, v in pairs(Data.Drawings) do v.Visible = false end
+            for _, v in pairs(Data.Labels) do v.Visible = false end
+            Data.Highlight.Enabled = false
+            Data.Highlight.Parent = nil
+        end
+    end
+end)
+
+-- 5.5. ITEM ESP RENDER LOOP (with studs to meters conversion)
+local DroppedItems = workspace:FindFirstChild("DroppedItems")
+if DroppedItems then
+    for _, Item in pairs(DroppedItems:GetChildren()) do
+        if Item:IsA("Model") and not Item:FindFirstChildOfClass("Humanoid") then
+            CreateItemESP(Item)
+        end
+    end
+    
+    DroppedItems.ChildAdded:Connect(function(Item)
+        if Item:IsA("Model") and not Item:FindFirstChildOfClass("Humanoid") then
+            CreateItemESP(Item)
+        end
+    end)
+    
+    DroppedItems.ChildRemoved:Connect(function(Item)
+        if ITEM_ESP_CACHE[Item] then
+            for _, Label in pairs(ITEM_ESP_CACHE[Item].Labels) do
+                Label:Destroy()
+            end
+            ITEM_ESP_CACHE[Item] = nil
+        end
+    end)
+end
+
+RunService.RenderStepped:Connect(function(dt)
+    if not (Toggles and Toggles.ItemEspMaster) then return end
+    
+    for Item, Data in pairs(ITEM_ESP_CACHE) do
+        if not Item or not Item.Parent then
+            for _, Label in pairs(Data.Labels) do
+                Label:Destroy()
+            end
+            ITEM_ESP_CACHE[Item] = nil
+            continue
+        end
+        
+        local IsValidItem = ShouldRenderItem(Item.Name)
+        local HasHumanoid = Item:FindFirstChildOfClass("Humanoid") ~= nil
+        
+        if Toggles.ItemEspMaster.Value and IsValidItem and not HasHumanoid then
+            Data.FadeAlpha = math.clamp(Data.FadeAlpha + (dt * (Options.ItemFadeSpeed and Options.ItemFadeSpeed.Value or 5)), 0, 1)
+        else
+            Data.FadeAlpha = math.clamp(Data.FadeAlpha - (dt * (Options.ItemFadeSpeed and Options.ItemFadeSpeed.Value or 5)), 0, 1)
+        end
+        
+        if Data.FadeAlpha > 0 then
+            local ItemPos = GetItemPosition(Item)
+            if ItemPos then
+                local ScreenPos, OnScreen = Camera:WorldToViewportPoint(ItemPos)
+                
+                if OnScreen then
+                    local GlobalAlpha = Data.FadeAlpha
+                    local currentTextSize = Options.ItemTextSize and Options.ItemTextSize.Value or 12
+                    local currentFont = LoadedFonts[Options.ItemEspFont and Options.ItemEspFont.Value or "Proggy Clean"]
+                    
+                    for _, Label in pairs(Data.Labels) do
+                        Label.TextSize = currentTextSize
+                        Label.FontFace = currentFont
+                    end
+                    
+                    Data.Labels.Name.Visible = Toggles.ShowItemName and Toggles.ShowItemName.Value or false
+                    Data.Labels.Name.Text = Item.Name
+                    Data.Labels.Name.TextColor3 = Options.ItemNameColor and Options.ItemNameColor.Value or Color3.new(1,1,1)
+                    Data.Labels.Name.TextStrokeColor3 = Options.ItemNameStroke and Options.ItemNameStroke.Value or Color3.new(0,0,0)
+                    Data.Labels.Name.TextTransparency = 1 - ((Options.ItemNameColor and (1 - Options.ItemNameColor.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Name.TextStrokeTransparency = 1 - ((Options.ItemNameStroke and (1 - Options.ItemNameStroke.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Name.Position = UDim2.new(0, ScreenPos.X - 100, 0, ScreenPos.Y - 16)
+                    
+                    Data.Labels.Distance.Visible = Toggles.ShowItemDist and Toggles.ShowItemDist.Value or false
+                    local studs = (ItemPos - Camera.CFrame.Position).Magnitude
+                    Data.Labels.Distance.Text = StudsToMeters(studs) .. "m"
+                    Data.Labels.Distance.TextColor3 = Options.ItemDistColor and Options.ItemDistColor.Value or Color3.new(1,1,1)
+                    Data.Labels.Distance.TextStrokeColor3 = Options.ItemDistStroke and Options.ItemDistStroke.Value or Color3.new(0,0,0)
+                    Data.Labels.Distance.TextTransparency = 1 - ((Options.ItemDistColor and (1 - Options.ItemDistColor.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Distance.TextStrokeTransparency = 1 - ((Options.ItemDistStroke and (1 - Options.ItemDistStroke.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Distance.Position = UDim2.new(0, ScreenPos.X - 100, 0, ScreenPos.Y + 1)
+                else
+                    for _, Label in pairs(Data.Labels) do
+                        Label.Visible = false
+                    end
+                end
+            else
+                for _, Label in pairs(Data.Labels) do
+                    Label.Visible = false
+                end
+            end
+        else
+            for _, Label in pairs(Data.Labels) do
+                Label.Visible = false
+            end
+        end
+    end
+end)
+
+-- 5.6. CORPSE ESP RENDER LOOP (with studs to meters conversion)
+local DroppedItems2 = workspace:FindFirstChild("DroppedItems")
+if DroppedItems2 then
+    for _, Item in pairs(DroppedItems2:GetChildren()) do
+        if Item:IsA("Model") and Item:FindFirstChildOfClass("Humanoid") then
+            CreateCorpseESP(Item)
+        end
+    end
+    
+    DroppedItems2.ChildAdded:Connect(function(Item)
+        if Item:IsA("Model") and Item:FindFirstChildOfClass("Humanoid") then
+            CreateCorpseESP(Item)
+        end
+    end)
+    
+    DroppedItems2.ChildRemoved:Connect(function(Item)
+        if CORPSE_ESP_CACHE[Item] then
+            for _, Label in pairs(CORPSE_ESP_CACHE[Item].Labels) do
+                Label:Destroy()
+            end
+            CORPSE_ESP_CACHE[Item] = nil
+        end
+    end)
+end
+
+RunService.RenderStepped:Connect(function(dt)
+    if not (Toggles and Toggles.CorpseEspMaster) then return end
+    
+    for Corpse, Data in pairs(CORPSE_ESP_CACHE) do
+        if not Corpse or not Corpse.Parent then
+            for _, Label in pairs(Data.Labels) do
+                Label:Destroy()
+            end
+            CORPSE_ESP_CACHE[Corpse] = nil
+            continue
+        end
+        
+        local IsValidCorpse = ShouldRenderCorpse(Corpse.Name)
+        local HasHumanoid = Corpse:FindFirstChildOfClass("Humanoid") ~= nil
+        
+        if Toggles.CorpseEspMaster.Value and IsValidCorpse and HasHumanoid then
+            Data.FadeAlpha = math.clamp(Data.FadeAlpha + (dt * (Options.CorpseFadeSpeed and Options.CorpseFadeSpeed.Value or 5)), 0, 1)
+        else
+            Data.FadeAlpha = math.clamp(Data.FadeAlpha - (dt * (Options.CorpseFadeSpeed and Options.CorpseFadeSpeed.Value or 5)), 0, 1)
+        end
+        
+        if Data.FadeAlpha > 0 then
+            local CorpsePos = GetItemPosition(Corpse)
+            if CorpsePos then
+                local ScreenPos, OnScreen = Camera:WorldToViewportPoint(CorpsePos)
+                
+                if OnScreen then
+                    local GlobalAlpha = Data.FadeAlpha
+                    local currentTextSize = Options.CorpseTextSize and Options.CorpseTextSize.Value or 12
+                    local currentFont = LoadedFonts[Options.CorpseEspFont and Options.CorpseEspFont.Value or "Proggy Clean"]
+                    
+                    for _, Label in pairs(Data.Labels) do
+                        Label.TextSize = currentTextSize
+                        Label.FontFace = currentFont
+                    end
+                    
+                    Data.Labels.Name.Visible = Toggles.ShowCorpseName and Toggles.ShowCorpseName.Value or false
+                    Data.Labels.Name.Text = Corpse.Name
+                    Data.Labels.Name.TextColor3 = Options.CorpseNameColor and Options.CorpseNameColor.Value or Color3.new(1,1,1)
+                    Data.Labels.Name.TextStrokeColor3 = Options.CorpseNameStroke and Options.CorpseNameStroke.Value or Color3.new(0,0,0)
+                    Data.Labels.Name.TextTransparency = 1 - ((Options.CorpseNameColor and (1 - Options.CorpseNameColor.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Name.TextStrokeTransparency = 1 - ((Options.CorpseNameStroke and (1 - Options.CorpseNameStroke.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Name.Position = UDim2.new(0, ScreenPos.X - 100, 0, ScreenPos.Y - 16)
+                    
+                    Data.Labels.Distance.Visible = Toggles.ShowCorpseDist and Toggles.ShowCorpseDist.Value or false
+                    local studs = (CorpsePos - Camera.CFrame.Position).Magnitude
+                    Data.Labels.Distance.Text = StudsToMeters(studs) .. "m"
+                    Data.Labels.Distance.TextColor3 = Options.CorpseDistColor and Options.CorpseDistColor.Value or Color3.new(1,1,1)
+                    Data.Labels.Distance.TextStrokeColor3 = Options.CorpseDistStroke and Options.CorpseDistStroke.Value or Color3.new(0,0,0)
+                    Data.Labels.Distance.TextTransparency = 1 - ((Options.CorpseDistColor and (1 - Options.CorpseDistColor.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Distance.TextStrokeTransparency = 1 - ((Options.CorpseDistStroke and (1 - Options.CorpseDistStroke.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Distance.Position = UDim2.new(0, ScreenPos.X - 100, 0, ScreenPos.Y + 1)
+                else
+                    for _, Label in pairs(Data.Labels) do
+                        Label.Visible = false
+                    end
+                end
+            else
+                for _, Label in pairs(Data.Labels) do
+                    Label.Visible = false
+                end
+            end
+        else
+            for _, Label in pairs(Data.Labels) do
+                Label.Visible = false
+            end
+        end
+    end
+end)
+
+-- 5.7. AI ESP SETUP AND RENDER LOOP
+-- FIX: Use WaitForChild so AiZones is found even if it hasn't replicated yet,
+-- and removed IsA("Folder") check so it works regardless of zone container class.
+local function SetupAIESP(AiZones)
+    local function RegisterNPC(Model)
+        if Model:IsA("Model") and Model:FindFirstChildOfClass("Humanoid") then
+            if not AI_ESP_CACHE[Model] then
+                CreateAIESP(Model)
+            end
+        end
+    end
+
+    local function CleanupNPC(Model)
+        if AI_ESP_CACHE[Model] then
+            for _, Label in pairs(AI_ESP_CACHE[Model].Labels) do
+                Label:Destroy()
+            end
+            for _, Draw in pairs(AI_ESP_CACHE[Model].Drawings) do
+                Draw:Remove()
+            end
+            if AI_ESP_CACHE[Model].Highlight then
+                AI_ESP_CACHE[Model].Highlight:Destroy()
+            end
+            AI_ESP_CACHE[Model] = nil
+        end
+    end
+
+    local function HookZone(SubFolder)
+        -- scan whatever is already in the zone
+        for _, Model in pairs(SubFolder:GetChildren()) do
+            RegisterNPC(Model)
+        end
+        -- watch for new NPCs spawning into this zone
+        SubFolder.ChildAdded:Connect(RegisterNPC)
+        SubFolder.ChildRemoved:Connect(CleanupNPC)
+    end
+
+    -- scan all current zones (no IsA("Folder") restriction)
+    for _, SubFolder in pairs(AiZones:GetChildren()) do
+        HookZone(SubFolder)
+    end
+
+    -- watch for new zones being added
+    AiZones.ChildAdded:Connect(function(SubFolder)
+        task.defer(function() HookZone(SubFolder) end)
+    end)
+
+    -- cleanup entire zone when removed
+    AiZones.ChildRemoved:Connect(function(SubFolder)
+        for _, Model in pairs(SubFolder:GetChildren()) do
+            CleanupNPC(Model)
+        end
+    end)
+end
+
+task.spawn(function()
+    local AiZones = workspace:WaitForChild("AiZones", 30)
+    if AiZones then
+        SetupAIESP(AiZones)
+    end
+end)
+
+RunService.RenderStepped:Connect(function(dt)
+    if not (Toggles and Toggles.AIEspMaster) then return end
+    
+    for AI, Data in pairs(AI_ESP_CACHE) do
+        if not AI or not AI.Parent then
+            if Data then
+                for _, Label in pairs(Data.Labels) do
+                    Label:Destroy()
+                end
+                for _, Drawing in pairs(Data.Drawings) do
+                    Drawing:Remove()
+                end
+                if Data.Highlight then
+                    Data.Highlight:Destroy()
+                end
+            end
+            AI_ESP_CACHE[AI] = nil
+            continue
+        end
+        
+        local Hum = AI:FindFirstChildOfClass("Humanoid")
+        local IsValidAI = ShouldRenderAI(AI.Name)
+        
+        if Toggles.AIEspMaster.Value and IsValidAI and Hum and Hum.Health > 0 then
+            Data.FadeAlpha = math.clamp(Data.FadeAlpha + (dt * (Options.AIFadeSpeed and Options.AIFadeSpeed.Value or 5)), 0, 1)
+        else
+            Data.FadeAlpha = math.clamp(Data.FadeAlpha - (dt * (Options.AIFadeSpeed and Options.AIFadeSpeed.Value or 5)), 0, 1)
+        end
+        
+        if Data.FadeAlpha > 0 and Hum and Hum.Health > 0 then
+            local BoxPos, BoxSize = GetBoundingBox(AI)
+            local GlobalAlpha = Data.FadeAlpha
+            
+            if BoxPos.X ~= math.huge then
+                local currentTextSize = Options.AITextSize and Options.AITextSize.Value or 12
+                local currentFont = LoadedFonts[Options.AIEspFont and Options.AIEspFont.Value or "Proggy Clean"]
+                
+                for _, Label in pairs(Data.Labels) do
+                    Label.TextSize = currentTextSize
+                    Label.FontFace = currentFont
+                end
+                
+                local hpPct = math.clamp(Hum.Health / Hum.MaxHealth, 0, 1)
+                local midX = math.floor(BoxPos.X + (BoxSize.X / 2))
+                
+                -- Box rendering
+                if Toggles.ShowAIBox and Toggles.ShowAIBox.Value then
+                    local boxTrans = (1 - Options.AIBoxColor.Transparency) * GlobalAlpha
+                    local outTrans = (1 - Options.AIBoxOutlineColor.Transparency) * GlobalAlpha
+                    
+                    Data.Drawings.BoxOutline.Visible = true
+                    Data.Drawings.BoxOutline.Transparency = outTrans
+                    Data.Drawings.BoxOutline.Size = BoxSize + Vector2.new(2, 2)
+                    Data.Drawings.BoxOutline.Position = BoxPos - Vector2.new(1, 1)
+                    Data.Drawings.BoxOutline.Color = Options.AIBoxOutlineColor.Value
+                    
+                    Data.Drawings.Box.Visible = true
+                    Data.Drawings.Box.Transparency = boxTrans
+                    Data.Drawings.Box.Size = BoxSize
+                    Data.Drawings.Box.Position = BoxPos
+                    Data.Drawings.Box.Color = Options.AIBoxColor.Value
+                    
+                    Data.Drawings.BoxInner.Visible = true
+                    Data.Drawings.BoxInner.Transparency = outTrans
+                    Data.Drawings.BoxInner.Size = BoxSize - Vector2.new(2, 2)
+                    Data.Drawings.BoxInner.Position = BoxPos + Vector2.new(1, 1)
+                    Data.Drawings.BoxInner.Color = Options.AIBoxOutlineColor.Value
+                else
+                    Data.Drawings.BoxOutline.Visible = false
+                    Data.Drawings.Box.Visible = false
+                    Data.Drawings.BoxInner.Visible = false
+                end
+                
+                -- Box fill
+                if Toggles.ShowAIFill and Toggles.ShowAIFill.Value then
+                    Data.Drawings.BoxFill.Visible = true
+                    Data.Drawings.BoxFill.Size = BoxSize
+                    Data.Drawings.BoxFill.Position = BoxPos
+                    Data.Drawings.BoxFill.Color = Options.AIFillColor.Value
+                    Data.Drawings.BoxFill.Transparency = (1 - Options.AIFillColor.Transparency) * GlobalAlpha
+                else
+                    Data.Drawings.BoxFill.Visible = false
+                end
+                
+                -- Health bar
+                if Toggles.ShowAIHealthBar and Toggles.ShowAIHealthBar.Value then
+                    local hpBarWidth = Options.AIHealthBarThickness and Options.AIHealthBarThickness.Value or 1
+                    local hpBarGap = Options.AIHealthBarGap and Options.AIHealthBarGap.Value or 6
+                    local hpBarHeight = BoxSize.Y
+                    local hpBarX = BoxPos.X - hpBarWidth - hpBarGap
+                    local hpBarY = BoxPos.Y
+                    local hpBarFillHeight = math.floor(hpBarHeight * hpPct)
+                    
+                    Data.Drawings.HealthBarOutline.Visible = true
+                    Data.Drawings.HealthBarOutline.Size = Vector2.new(hpBarWidth + 2, hpBarHeight + 2)
+                    Data.Drawings.HealthBarOutline.Position = Vector2.new(hpBarX - 1, hpBarY - 1)
+                    Data.Drawings.HealthBarOutline.Color = Options.AIHealthBarOutline.Value
+                    Data.Drawings.HealthBarOutline.Transparency = (1 - Options.AIHealthBarOutline.Transparency) * GlobalAlpha
+                    Data.Drawings.HealthBarOutline.Filled = false
+                    
+                    local hpBarColor
+                    if Toggles.AIHealthBarDynamic.Value then
+                        local highColor = Options.AIHealthBarHighColor.Value
+                        local lowColor = Options.AIHealthBarLowColor.Value
+                        hpBarColor = LerpColor(lowColor, highColor, hpPct)
+                    else
+                        hpBarColor = Options.AIHealthBarColor.Value
+                    end
+                    
+                    Data.Drawings.HealthBarFill.Visible = true
+                    Data.Drawings.HealthBarFill.Size = Vector2.new(hpBarWidth, hpBarFillHeight)
+                    Data.Drawings.HealthBarFill.Position = Vector2.new(hpBarX, hpBarY + (hpBarHeight - hpBarFillHeight))
+                    Data.Drawings.HealthBarFill.Color = hpBarColor
+                    Data.Drawings.HealthBarFill.Transparency = (1 - Options.AIHealthBarColor.Transparency) * GlobalAlpha
+                else
+                    Data.Drawings.HealthBarOutline.Visible = false
+                    Data.Drawings.HealthBarFill.Visible = false
+                end
+                
+                -- Name label
+                Data.Labels.Name.Visible = Toggles.ShowAIName and Toggles.ShowAIName.Value or false
+                Data.Labels.Name.Text = AI.Name
+                Data.Labels.Name.TextColor3 = Options.AINameColor.Value
+                Data.Labels.Name.TextStrokeColor3 = Options.AINameStroke.Value
+                Data.Labels.Name.TextTransparency = 1 - ((1 - Options.AINameColor.Transparency) * GlobalAlpha)
+                Data.Labels.Name.TextStrokeTransparency = 1 - ((1 - Options.AINameStroke.Transparency) * GlobalAlpha)
+                Data.Labels.Name.Position = UDim2.new(0, midX - 100, 0, BoxPos.Y - 16)
+                
+                -- Distance label (with studs to meters conversion)
+                Data.Labels.Distance.Visible = Toggles.ShowAIDist and Toggles.ShowAIDist.Value or false
+                local PrimaryPart = AI.PrimaryPart or AI:FindFirstChildWhichIsA("BasePart")
+                if PrimaryPart then
+                    local studs = (PrimaryPart.Position - Camera.CFrame.Position).Magnitude
+                    Data.Labels.Distance.Text = StudsToMeters(studs) .. "m"
+                end
+                Data.Labels.Distance.TextColor3 = Options.AIDistColor.Value
+                Data.Labels.Distance.TextStrokeColor3 = Options.AIDistStroke.Value
+                Data.Labels.Distance.TextTransparency = 1 - ((1 - Options.AIDistColor.Transparency) * GlobalAlpha)
+                Data.Labels.Distance.TextStrokeTransparency = 1 - ((1 - Options.AIDistStroke.Transparency) * GlobalAlpha)
+                Data.Labels.Distance.Position = UDim2.new(0, midX - 100, 0, BoxPos.Y + BoxSize.Y + 1)
+                
+                -- Health label
+                Data.Labels.Health.Visible = Toggles.ShowAIHealth and Toggles.ShowAIHealth.Value or false
+                Data.Labels.Health.Text = tostring(math.floor(Hum.Health))
+                Data.Labels.Health.TextColor3 = Options.AIHealthColor.Value
+                Data.Labels.Health.TextStrokeColor3 = Options.AIHealthStroke.Value
+                Data.Labels.Health.TextTransparency = 1 - ((1 - Options.AIHealthColor.Transparency) * GlobalAlpha)
+                Data.Labels.Health.TextStrokeTransparency = 1 - ((1 - Options.AIHealthStroke.Transparency) * GlobalAlpha)
+                
+                if Toggles.AIHealthTextFollowBar and Toggles.AIHealthTextFollowBar.Value then
+                    local hpBarWidth = Options.AIHealthBarThickness and Options.AIHealthBarThickness.Value or 1
+                    local hpBarGap = Options.AIHealthBarGap and Options.AIHealthBarGap.Value or 6
+                    local hpBarX = BoxPos.X - hpBarWidth - hpBarGap
+                    Data.Labels.Health.Position = UDim2.new(0, hpBarX - 55, 0, BoxPos.Y - 2)
+                else
+                    Data.Labels.Health.Position = UDim2.new(0, BoxPos.X - 55, 0, BoxPos.Y - 2)
+                end
+                
+                -- AI CHAMS
+                if Toggles.ShowAIChams and Toggles.ShowAIChams.Value and AI then
+                    Data.Highlight.Parent = AI
+                    Data.Highlight.Enabled = true
+                    Data.Highlight.FillColor = Options.AIChamsFillColor.Value
+                    Data.Highlight.OutlineColor = Options.AIChamsOutlineColor.Value
+                    Data.Highlight.FillTransparency = Options.AIChamsFillColor.Transparency
+                    Data.Highlight.OutlineTransparency = Options.AIChamsOutlineColor.Transparency
+                    Data.Highlight.DepthMode = (Toggles.AIChamsAlwaysOccluded and Toggles.AIChamsAlwaysOccluded.Value) 
+                        and Enum.HighlightDepthMode.AlwaysOnTop 
+                        or Enum.HighlightDepthMode.Occluded
+                else
+                    Data.Highlight.Enabled = false
+                    Data.Highlight.Parent = nil
+                end
+            else
+                for _, v in pairs(Data.Drawings) do v.Visible = false end
+                for _, v in pairs(Data.Labels) do v.Visible = false end
+            end
+        else
+            for _, v in pairs(Data.Drawings) do v.Visible = false end
+            for _, v in pairs(Data.Labels) do v.Visible = false end
+            if Data.Highlight then
+                Data.Highlight.Enabled = false
+            end
+        end
+    end
+end)
+
+-- 5.8. EXTRACT ESP SETUP AND RENDER LOOP
+local NoCollision = workspace:FindFirstChild("NoCollision")
+local ExitLocations = NoCollision and NoCollision:FindFirstChild("ExitLocations")
+
+if ExitLocations then
+    -- Create ESP for existing extracts
+    for _, Extract in pairs(ExitLocations:GetChildren()) do
+        if Extract:IsA("BasePart") or Extract:IsA("Model") then
+            CreateExtractESP(Extract)
+        end
+    end
+    
+    -- Handle new extracts
+    ExitLocations.ChildAdded:Connect(function(Extract)
+        if Extract:IsA("BasePart") or Extract:IsA("Model") then
+            CreateExtractESP(Extract)
+        end
+    end)
+    
+    -- Handle removed extracts
+    ExitLocations.ChildRemoved:Connect(function(Extract)
+        if EXTRACT_ESP_CACHE[Extract] then
+            for _, Label in pairs(EXTRACT_ESP_CACHE[Extract].Labels) do
+                Label:Destroy()
+            end
+            EXTRACT_ESP_CACHE[Extract] = nil
+        end
+    end)
+end
+
+-- Extract ESP render loop
+RunService.RenderStepped:Connect(function(dt)
+    if not (Toggles and Toggles.ExtractEspMaster) then return end
+    
+    for Extract, Data in pairs(EXTRACT_ESP_CACHE) do
+        if not Extract or not Extract.Parent then
+            for _, Label in pairs(Data.Labels) do
+                Label:Destroy()
+            end
+            EXTRACT_ESP_CACHE[Extract] = nil
+            continue
+        end
+        
+        local IsValidExtract = ShouldRenderExtract(Extract.Name)
+        
+        if Toggles.ExtractEspMaster.Value and IsValidExtract then
+            Data.FadeAlpha = math.clamp(Data.FadeAlpha + (dt * (Options.ExtractFadeSpeed and Options.ExtractFadeSpeed.Value or 5)), 0, 1)
+        else
+            Data.FadeAlpha = math.clamp(Data.FadeAlpha - (dt * (Options.ExtractFadeSpeed and Options.ExtractFadeSpeed.Value or 5)), 0, 1)
+        end
+        
+        if Data.FadeAlpha > 0 then
+            local ExtractPos = GetItemPosition(Extract)
+            if ExtractPos then
+                local ScreenPos, OnScreen = Camera:WorldToViewportPoint(ExtractPos)
+                
+                if OnScreen then
+                    local GlobalAlpha = Data.FadeAlpha
+                    local currentTextSize = Options.ExtractTextSize and Options.ExtractTextSize.Value or 12
+                    local currentFont = LoadedFonts[Options.ExtractEspFont and Options.ExtractEspFont.Value or "Proggy Clean"]
+                    
+                    for _, Label in pairs(Data.Labels) do
+                        Label.TextSize = currentTextSize
+                        Label.FontFace = currentFont
+                    end
+                    
+                    -- Extract Name
+                    Data.Labels.Name.Visible = Toggles.ShowExtractName and Toggles.ShowExtractName.Value or false
+                    Data.Labels.Name.Text = Extract.Name
+                    Data.Labels.Name.TextColor3 = Options.ExtractNameColor and Options.ExtractNameColor.Value or Color3.new(0,1,0)
+                    Data.Labels.Name.TextStrokeColor3 = Options.ExtractNameStroke and Options.ExtractNameStroke.Value or Color3.new(0,0,0)
+                    Data.Labels.Name.TextTransparency = 1 - ((Options.ExtractNameColor and (1 - Options.ExtractNameColor.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Name.TextStrokeTransparency = 1 - ((Options.ExtractNameStroke and (1 - Options.ExtractNameStroke.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Name.Position = UDim2.new(0, ScreenPos.X - 100, 0, ScreenPos.Y - 16)
+                    
+                    -- Extract Distance (with studs to meters conversion)
+                    Data.Labels.Distance.Visible = Toggles.ShowExtractDist and Toggles.ShowExtractDist.Value or false
+                    local studs = (ExtractPos - Camera.CFrame.Position).Magnitude
+                    Data.Labels.Distance.Text = StudsToMeters(studs) .. "m"
+                    Data.Labels.Distance.TextColor3 = Options.ExtractDistColor and Options.ExtractDistColor.Value or Color3.new(0,1,0)
+                    Data.Labels.Distance.TextStrokeColor3 = Options.ExtractDistStroke and Options.ExtractDistStroke.Value or Color3.new(0,0,0)
+                    Data.Labels.Distance.TextTransparency = 1 - ((Options.ExtractDistColor and (1 - Options.ExtractDistColor.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Distance.TextStrokeTransparency = 1 - ((Options.ExtractDistStroke and (1 - Options.ExtractDistStroke.Transparency) or 1) * GlobalAlpha)
+                    Data.Labels.Distance.Position = UDim2.new(0, ScreenPos.X - 100, 0, ScreenPos.Y + 1)
+                else
+                    for _, Label in pairs(Data.Labels) do
+                        Label.Visible = false
+                    end
+                end
+            else
+                for _, Label in pairs(Data.Labels) do
+                    Label.Visible = false
+                end
+            end
+        else
+            for _, Label in pairs(Data.Labels) do
+                Label.Visible = false
+            end
+        end
+    end
+end)
+
+local visualsambient    = Tabs.Visuals:AddRightGroupbox('world')
+
+-- // 9. WORLD VISUALS STATE
+local WorldState = {
+    OriginalAmbient = Lighting.Ambient,
+    OriginalOutdoorAmbient = Lighting.OutdoorAmbient,
+    OriginalColorShift_Top = Lighting.ColorShift_Top,
+    OriginalBrightness = Lighting.Brightness,
+    OriginalClockTime = Lighting.ClockTime,
+    FoliageDeleted = false
+}
+
+-- Lighting Override Function
+local function UpdateWorldVisuals()
+    if Toggles.world_ambient_enabled.Value then
+        Lighting.Ambient = Options.world_ambient_color.Value
+        Lighting.OutdoorAmbient = Options.world_ambient_color.Value
+        Lighting.ColorShift_Top = Options.world_ambient_color.Value
+    else
+        Lighting.Ambient = WorldState.OriginalAmbient
+        Lighting.OutdoorAmbient = WorldState.OriginalOutdoorAmbient
+        Lighting.ColorShift_Top = WorldState.OriginalColorShift_Top
+    end
+
+    if Toggles.world_time_enabled.Value then
+        Lighting.ClockTime = Options.world_time_slider.Value
+    else
+        Lighting.ClockTime = WorldState.OriginalClockTime
+    end
+end
+
+-- Bloom Modification
+local function UpdateBloom()
+    local bloom = Lighting:FindFirstChildOfClass("BloomEffect") or Instance.new("BloomEffect", Lighting)
+    if Toggles.world_bloom_enabled.Value then
+        bloom.Intensity = Options.world_bloom_intensity.Value
+        bloom.Threshold = Options.world_bloom_threshold.Value
+    else
+        bloom.Intensity = 1 -- Default
+        bloom.Threshold = 2 -- Default
+    end
+end
+
+-- Grass & Foliage Loop
+task.spawn(function()
+    while true do
+        task.wait(2)
+        -- No Grass Logic
+        if Toggles.world_nograss and Toggles.world_nograss.Value and workspace.Terrain then
+            pcall(function()
+                sethiddenproperty(workspace.Terrain, "Decoration", false)
+                sethiddenproperty(workspace.Terrain, "GrassLength", 0)
+            end)
+        end
+        -- Foliage Deletion (Permanent for session)
+        if Toggles.world_del_foliage and Toggles.world_del_foliage.Value and not WorldState.FoliageDeleted then
+            WorldState.FoliageDeleted = true
+            for _, v in ipairs(workspace:GetDescendants()) do
+                if v:IsA("Folder") and v.Name:lower():find("foliage") then 
+                    v:Destroy() 
+                end
+            end
+        end
+    end
+end)
+
+-- // 10. WORLD UI SETUP
+local wambient = visualsambient:AddToggle('world_ambient_enabled', { Text = 'override ambient', Default = false })
+wambient:AddColorPicker('world_ambient_color', { Default = rgb(255, 255, 255), Title = 'world color' })
+
+local wbloom = visualsambient:AddToggle('world_bloom_enabled', { Text = 'override bloom', Default = false })
+local wbloom_int = visualsambient:AddSlider('world_bloom_intensity', { Text = 'bloom intensity', Default = 1, Min = 0, Max = 10, Rounding = 1 })
+local wbloom_thr = visualsambient:AddSlider('world_bloom_threshold', { Text = 'bloom threshold', Default = 2, Min = 0, Max = 10, Rounding = 1 })
+
+visualsambient:AddDivider()
+
+local wtime = visualsambient:AddToggle('world_time_enabled', { Text = 'override time', Default = false })
+local wtime_slide = visualsambient:AddSlider('world_time_slider', { Text = 'clock time', Default = 12, Min = 0, Max = 24, Rounding = 1 })
+
+visualsambient:AddDivider()
+
+local wnograss = visualsambient:AddToggle('world_nograss', { Text = 'no grass', Default = false })
+local wnofoliage = visualsambient:AddToggle('world_del_foliage', { Text = 'delete foliage', Default = false })
+
+-- // LOGIC CONNECTIONS
+wambient:OnChanged(UpdateWorldVisuals)
+Options.world_ambient_color:OnChanged(UpdateWorldVisuals)
+
+wbloom:OnChanged(UpdateBloom)
+wbloom_int:OnChanged(UpdateBloom)
+wbloom_thr:OnChanged(UpdateBloom)
+
+wtime:OnChanged(UpdateWorldVisuals)
+wtime_slide:OnChanged(UpdateWorldVisuals)
+
+
+
+-- // 2. STATE & GHOST SETUP
+local State = {
+    FreecamRot = Vector2.zero,
+    FreecamCFrame = CFrame.new()
+}
+
+local GhostPart = Instance.new("Part")
+GhostPart.Name = "TP_Ghost"
+GhostPart.Anchored = true
+GhostPart.CanCollide = false
+GhostPart.CanTouch = false
+GhostPart.CanQuery = false
+GhostPart.CastShadow = false
+GhostPart.Size = Vector3.new(2, 2, 1)
+GhostPart.Parent = nil
+
+-- // 3. THE "BLOCKER" HOOKS
+-- This stops the game from setting FOV or Tweening it back to default
+local __newindex; __newindex = hookmetamethod(game, "__newindex", newcclosure(function(self, k, v)
+    if checkcaller() then return __newindex(self, k, v) end
+    
+    if self == Camera and k == "FieldOfView" then
+        if Toggles.cam_fov_enabled.Value or Toggles.cam_zoom.Value then
+            return -- Block game scripts from setting FOV
+        end
+    end
+    
+    return __newindex(self, k, v)
+end))
+
+local __namecall; __namecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    if checkcaller() then return __namecall(self, ...) end
+    
+    local args = {...}
+    local method = getnamecallmethod()
+    
+    if self == TweenService and method == "Create" and args[1] == Camera then
+        if args[3] and rawget(args[3], "FieldOfView") then
+            if Toggles.cam_fov_enabled.Value or Toggles.cam_zoom.Value then
+                args[3].FieldOfView = nil -- Strip FOV from the tween
+                return __namecall(self, unpack(args))
+            end
+        end
+    end
+    
+    return __namecall(self, ...)
+end))
+
+-- // 4. CORE RENDER LOOP
+RunService:BindToRenderStep("RadiumCameraCore", Enum.RenderPriority.Camera.Value + 1, function()
+    -- FOV / Zoom Logic
+    local finalFOV = 90
+    if Toggles.cam_zoom and Toggles.cam_zoom.Value then
+        finalFOV = Options.cam_zoom_fov.Value
+    elseif Toggles.cam_fov_enabled and Toggles.cam_fov_enabled.Value then
+        finalFOV = Options.cam_fov_val.Value
+    end
+    Camera.FieldOfView = finalFOV
+
+    -- Third Person & Ghost
+    if Toggles.cam_tp and Toggles.cam_tp.Value and not Toggles.cam_fc.Value then
+        local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            GhostPart.Parent = workspace
+            GhostPart.CFrame = hrp.CFrame
+            GhostPart.Color = Options.ghost_color.Value
+            GhostPart.Transparency = Options.ghost_trans.Value
+            Camera.CFrame = Camera.CFrame * CFrame.new(0, 0, Options.cam_tp_dist.Value)
+        end
+    else
+        GhostPart.Parent = nil
+    end
+
+    -- Freecam Logic
+    if Toggles.cam_fc and Toggles.cam_fc.Value then
+        local delta = UserInputService:GetMouseDelta()
+        State.FreecamRot = State.FreecamRot - Vector2.new(delta.X * 0.3, delta.Y * 0.3)
+        local rot = CFrame.Angles(0, math.rad(State.FreecamRot.X), 0) * CFrame.Angles(math.rad(State.FreecamRot.Y), 0, 0)
+        local move = Vector3.zero
+        
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + rot.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - rot.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + rot.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - rot.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.up end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then move = move - Vector3.up end
+        
+        State.FreecamCFrame = CFrame.new(State.FreecamCFrame.Position + (move * Options.fc_speed.Value)) * rot
+        Camera.CFrame = State.FreecamCFrame
+    end
+end)
+
+-- // 5. UI CONSTRUCTION
+local CameraBox = Tabs.Visuals:AddRightGroupbox('camera')
+
+CameraBox:AddToggle('cam_fov_enabled', { Text = 'force custom fov', Default = true })
+CameraBox:AddSlider('cam_fov_val', { Text = 'fov value', Default = 90, Min = 30, Max = 140, Rounding = 1 })
+
+CameraBox:AddDivider()
+
+local zoomT = CameraBox:AddToggle('cam_zoom', { Text = 'zoom', Default = false })
+zoomT:AddKeyPicker('zoom_bind', { Default = 'nil', SyncToggleState = true, Mode = 'Toggle', Text = 'zoom' })
+CameraBox:AddSlider('cam_zoom_fov', { Text = 'zoom fov', Default = 30, Min = 1, Max = 50, Rounding = 1, })
+
+CameraBox:AddDivider()
+
+local tpT = CameraBox:AddToggle('cam_tp', { Text = 'third person', Default = false })
+tpT:AddKeyPicker('tp_bind', { Default = '', SyncToggleState = true, Mode = 'Toggle', Text = 'third person' })
+tpT:AddColorPicker('ghost_color', { Default = rgb(255, 255, 255), Title = 'ghost color' })
+CameraBox:AddSlider('cam_tp_dist', { Text = 'tp distance', Default = 10, Min = 2, Max = 30, Rounding = 1 })
+CameraBox:AddSlider('ghost_trans', { Text = 'ghost transparency', Default = 1, Min = 0, Max = 1, Rounding = 2 })
+
+CameraBox:AddDivider()
+
+local fcT = CameraBox:AddToggle('cam_fc', { Text = 'freecam', Default = false })
+fcT:AddKeyPicker('fc_bind', { Default = '', SyncToggleState = true, Mode = 'Toggle', Text = 'freecam' })
+CameraBox:AddSlider('fc_speed', { Text = 'freecam speed', Default = 1, Min = 0.1, Max = 10, Rounding = 1 })
+
+-- // 6. CONNECTIONS
+fcT:OnChanged(function()
+    local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if Toggles.cam_fc.Value then
+        State.FreecamCFrame = Camera.CFrame
+        local y, x, z = Camera.CFrame:ToOrientation()
+        State.FreecamRot = Vector2.new(math.rad(x), math.rad(y))
+        if hrp then hrp.Anchored = true end
+    else
+        if hrp then hrp.Anchored = false end
+    end
+end)
+
+local WeaponViz = Tabs.Visuals:AddRightGroupbox('weapon visuals')
+
+-- Material override dropdown
+WeaponViz:AddDropdown('weapon_material', {
+    Values = { "Default", "Neon", "Metal", "Glass", "Plastic", "Ice", "ForceField", "SmoothPlastic" },
+    Default = 1,
+    Text = 'material override',
+    Tooltip = 'Change weapon material (Default = no change)'
+})
+
+-- Color tint toggle with transparency slider inside
+local colorTint = WeaponViz:AddToggle('weapon_tint_enabled', { 
+    Text = 'color tint',
+    Default = false,
+    Tooltip = 'Apply color to weapon parts'
+})
+colorTint:AddColorPicker('weapon_tint_color', { 
+    Default = Color3.new(1, 0, 0),  -- Red default
+    Title = 'tint color',
+    Transparency = 0.5  -- This adds a transparency slider (0-1)
+})
+
+-- Transparency toggle (separate control)
+WeaponViz:AddToggle('weapon_transparency_enabled', { 
+    Text = 'transparency override',
+    Default = false 
+})
+WeaponViz:AddSlider('weapon_transparency_value', { 
+    Text = 'transparency', 
+    Min = 0, 
+    Max = 1, 
+    Default = 0.5, 
+    Rounding = 2,
+    Tooltip = 'Make weapon transparent'
+})
+
+-- Size scale slider
+WeaponViz:AddSlider('weapon_scale', { 
+    Text = 'size scale', 
+    Min = 0.1, 
+    Max = 5, 
+    Default = 1, 
+    Rounding = 2,
+    Tooltip = 'Make weapon bigger or smaller'
+})
+
+-- Position offset group (X, Y, Z)
+WeaponViz:AddLabel('position offset (studs)')
+
+WeaponViz:AddSlider('weapon_offset_x', { 
+    Text = 'X offset', 
+    Min = -5, 
+    Max = 5, 
+    Default = 0, 
+    Rounding = 2, 
+    Compact = true
+})
+
+WeaponViz:AddSlider('weapon_offset_y', { 
+    Text = 'Y offset', 
+    Min = -5, 
+    Max = 5, 
+    Default = 0, 
+    Rounding = 2,
+    Compact = true
+})
+
+WeaponViz:AddSlider('weapon_offset_z', { 
+    Text = 'Z offset', 
+    Min = -5, 
+    Max = 5, 
+    Default = 0, 
+    Rounding = 2, 
+    Compact = true
+})
+
+-- Wireframe/outline toggle with color picker (transparency inside)
+local outlineToggle = WeaponViz:AddToggle('weapon_outline_enabled', { 
+    Text = 'wireframe outline',
+    Default = false,
+    Tooltip = 'Show selection box around weapon'
+})
+outlineToggle:AddColorPicker('weapon_outline_color', { 
+    Default = Color3.new(1, 1, 1),
+    Title = 'outline color',
+    Transparency = 0  -- Outline is usually solid, but user can adjust
+})
+
+-- Outline thickness slider
+WeaponViz:AddSlider('weapon_outline_thickness', { 
+    Text = 'outline thickness', 
+    Min = 0.1, 
+    Max = 3, 
+    Default = 1, 
+    Rounding = 2 
+})
+
+-- Glow effect toggle (using Highlight)
+local glowToggle = WeaponViz:AddToggle('weapon_glow_enabled', { 
+    Text = 'glow effect',
+    Default = false,
+    Tooltip = 'Add highlight glow to weapon'
+})
+glowToggle:AddColorPicker('weapon_glow_color', { 
+    Default = Color3.new(0, 1, 1),  -- Cyan default
+    Title = 'glow color',
+    Transparency = 0.7  -- High transparency for subtle glow
+})
+
+-- Reset all button
+WeaponViz:AddButton({ 
+    Text = 'reset all weapon visuals',
+    Func = function()
+        -- Reset all toggles to false/default values
+        Toggles.weapon_tint_enabled:SetValue(false)
+        Toggles.weapon_transparency_enabled:SetValue(false)
+        Toggles.weapon_outline_enabled:SetValue(false)
+        Toggles.weapon_glow_enabled:SetValue(false)
+        Options.weapon_material:SetValue("Default")
+        Options.weapon_scale:SetValue(1)
+        Options.weapon_offset_x:SetValue(0)
+        Options.weapon_offset_y:SetValue(0)
+        Options.weapon_offset_z:SetValue(0)
+        Library:Notify("Weapon visuals reset", 2)
+    end
+})
+
+local visualsother = Tabs.Visuals:AddRightGroupbox('other')
+
+visualsother:AddToggle('noscreenfx', {
+    Text = 'no visor',
+    Default = false,
+    Callback = function(Value)
+        local playergui = LocalPlayer:FindFirstChild("PlayerGui")
+        if not playergui then return end
+
+        local noinsetgui = playergui:FindFirstChild("NoInsetGui")
+        if not noinsetgui then return end
+
+        local mainframe = noinsetgui:FindFirstChild("MainFrame")
+        if not mainframe then return end
+
+        local screeneffects = mainframe:FindFirstChild("ScreenEffects")
+        if screeneffects then
+            screeneffects.Visible = not Value
+        end
+    end
+})
+-- // 13. PLAYER LOGGER LOGIC
+local LoggerSettings = {
+    Join = false,
+    Leave = false
+}
+
+Players.PlayerAdded:Connect(function(player)
+    if LoggerSettings.Join then
+        Library:Notify(string.format("[+] %s has joined the server", player.Name), 5)
+    end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+    if LoggerSettings.Leave then
+        Library:Notify(string.format("[-] %s has left the server", player.Name), 5)
+    end
+end)
+
+-- // 14. MISC UI SETUP
+local MiscBox = Tabs.Main:AddLeftGroupbox('notifications')
+
+local ljoin = MiscBox:AddToggle('log_joins', { Text = 'log player joins', Default = false })
+local lleave = MiscBox:AddToggle('log_leaves', { Text = 'log player leaves', Default = false })
+
+-- // LOGIC CONNECTIONS
+ljoin:OnChanged(function()
+    LoggerSettings.Join = Toggles.log_joins.Value
+end)
+
+lleave:OnChanged(function()
+    LoggerSettings.Leave = Toggles.log_leaves.Value
+end)
+
+-- // 15. SOUND LOGIC
+local SoundState = {
+    HitsoundEnabled = false,
+    SelectedSound = "Skeet",
+    Volume = 1,
+}
+
+-- Mapping filenames from your zip to asset IDs
+local HitSounds = {
+    ["Skeet"]         = "rbxassetid://5633695679",
+    ["Neverlose"]     = "rbxassetid://18391691942",
+    ["Rust"]          = "rbxassetid://97189180645129",
+    ["Minecraft"]     = "rbxassetid://138637983416785",
+    ["Mario"]         = "rbxassetid://135483737426662",
+    ["Bubble"]        = "rbxassetid://133824819874255",
+    ["Bameware"]      = "rbxassetid://92614567965693",
+    ["TF2 Crit"]      = "rbxassetid://137392628136734",
+    ["Fatality"]      = "rbxassetid://138378419413244",
+    ["Bonk"]          = "rbxassetid://137041944943141",
+    ["Uwu"]           = "rbxassetid://117959044259240",
+    ["oh no"]           = "rbxassetid://125803130986369",
+    ["good boy"]          = "rbxassetid://102930414907037",
+    ["plankton moaning"]  = "rbxassetid://118887526039016",
+}
+
+local function PlayHitSound()
+    if not SoundState.HitsoundEnabled then return end
+    
+    local sound = Instance.new("Sound")
+    sound.SoundId = HitSounds[SoundState.SelectedSound] or HitSounds["Skeet"]
+    sound.Volume = SoundState.Volume
+    sound.Parent = game:GetService("SoundService")
+    sound:Play()
+    
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+end
+
+-- Project Delta Hit Hook
+local __namecall; __namecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+    local args = {...}
+    local method = getnamecallmethod()
+    
+    if method == "FireServer" and self.Name == "ProjectileInflict" then
+        task.spawn(PlayHitSound)
+    end
+    
+    return __namecall(self, ...)
+end))
+
+local SoundBox = Tabs.Main:AddLeftGroupbox('sound settings')
+
+local htoggle = SoundBox:AddToggle('hitsound_enabled', { Text = 'hitsounds', Default = false })
+
+local hdropdown = SoundBox:AddDropdown('hitsound_selection', { 
+    Values = { 
+        "Skeet", "Neverlose", "Rust", "Minecraft", 
+        "Mario", "Bubble", "Bameware", "TF2 Crit", 
+        "Fatality", "Bonk", "Uwu", "oh no", "good boy", "plankton moaning"
+    }, 
+    Default = 1, 
+    Text = 'hitsound type' 
+})
+
+local hvolume = SoundBox:AddSlider('hitsound_volume', { 
+    Text = 'hitsound volume', 
+    Default = 1, 
+    Min = 0.1, 
+    Max = 5, 
+    Rounding = 1 
+})
+
+htoggle:OnChanged(function()
+    SoundState.HitsoundEnabled = Toggles.hitsound_enabled.Value
+end)
+
+hdropdown:OnChanged(function()
+    SoundState.SelectedSound = Options.hitsound_selection.Value
+end)
+
+hvolume:OnChanged(function()
+    SoundState.Volume = Options.hitsound_volume.Value
+end)
+
+SoundBox:AddButton('test sound', function()
+    PlayHitSound()
+end)
+
+-- // settings tab
+
+local MenuGroup = Tabs.UISettings:AddLeftGroupbox('menu')
+MenuGroup:AddButton('unload', function() Library:Unload() end)
+MenuGroup:AddLabel('menu bind'):AddKeyPicker('MenuKeybind', {
+    Default = 'End',
+    NoUI    = true,
+    Text    = 'menu keybind',
+})
+
+Library.ToggleKeybind = Options.MenuKeybind
+
+-- watermark
+Library:SetWatermarkVisibility(true)
+
+local FrameTimer   = tick()
+local FrameCounter = 0
+local FPS          = 60
+
+local WatermarkConnection = RunService.RenderStepped:Connect(function()
+    FrameCounter += 1
+    if (tick() - FrameTimer) >= 1 then
+        FPS          = FrameCounter
+        FrameTimer   = tick()
+        FrameCounter = 0
+    end
+    Library:SetWatermark(('radium | private | project delta | %s fps | %s ms'):format(
+        math.floor(FPS),
+        math.floor(game:GetService('Stats').Network.ServerStatsItem['Data Ping']:GetValue())
+    ))
+end)
+
+Library.KeybindFrame.Visible = true
+
+Library:OnUnload(function()
+    WatermarkConnection:Disconnect()
+    Library.Unloaded = true
+    print('[radium.cc] unloaded')
+end)
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({ 'MenuKeybind' })
+ThemeManager:SetFolder('radium')
+SaveManager:SetFolder('radium/config')
+SaveManager:BuildConfigSection(Tabs.UISettings)
+ThemeManager:ApplyToTab(Tabs.UISettings)
+SaveManager:LoadAutoloadConfig()
+
+-- ============================================================
+-- // shared screengui
+-- ============================================================
+
+if CoreGui:FindFirstChild('swimhubUI') then
+    CoreGui.swimhubUI:Destroy()
+end
+
+local ProtectGui = protectgui or (syn and syn.protect_gui) or (function() end)
+
+local ScreenGui = Instance.new('ScreenGui')
+ScreenGui.Name = 'swimhubUI'
+ProtectGui(ScreenGui)
+ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+ScreenGui.Parent = CoreGui
+
+-- ============================================================
+-- // helper: build a standard panel window
+-- ============================================================
+
+local function BuildPanel(posX, posY, w, h, title, visible)
+    local PanelOuter = Library:Create('Frame', {
+        BackgroundColor3 = Color3.new(0, 0, 0),
+        BorderSizePixel  = 0,
+        Position         = UDim2.fromOffset(posX, posY),
+        Size             = UDim2.fromOffset(w, h),
+        Visible          = visible,
+        ZIndex           = 1,
+        Parent           = ScreenGui,
+    })
+
+    local PanelInner = Library:Create('Frame', {
+        BackgroundColor3 = Library.BackgroundColor,
+        BorderColor3     = Library.AccentColor,
+        BorderMode       = Enum.BorderMode.Inset,
+        Position         = UDim2.new(0, 1, 0, 1),
+        Size             = UDim2.new(1, -2, 1, -2),
+        ZIndex           = 1,
+        Parent           = PanelOuter,
+    })
+    Library:AddToRegistry(PanelInner, { BackgroundColor3 = 'BackgroundColor', BorderColor3 = 'AccentColor' })
+
+    local PanelHeader = Library:Create('Frame', {
+        BackgroundColor3 = Library.MainColor,
+        BorderColor3     = Library.OutlineColor,
+        BorderMode       = Enum.BorderMode.Inset,
+        Size             = UDim2.new(1, 0, 0, 36),
+        ZIndex           = 2,
+        Parent           = PanelInner,
+    })
+    Library:AddToRegistry(PanelHeader, { BackgroundColor3 = 'MainColor', BorderColor3 = 'OutlineColor' })
+
+    local PanelHeaderFix = Library:Create('Frame', {
+        BackgroundColor3 = Library.MainColor,
+        BorderSizePixel  = 0,
+        Position         = UDim2.new(0, 0, 1, -1),
+        Size             = UDim2.new(1, 0, 0, 1),
+        ZIndex           = 3,
+        Parent           = PanelHeader,
+    })
+    Library:AddToRegistry(PanelHeaderFix, { BackgroundColor3 = 'MainColor' })
+
+    local PanelHeaderSep = Library:Create('Frame', {
+        BackgroundColor3 = Library.OutlineColor,
+        BorderSizePixel  = 0,
+        Position         = UDim2.new(0, 0, 0, 36),
+        Size             = UDim2.new(1, 0, 0, 1),
+        ZIndex           = 2,
+        Parent           = PanelInner,
+    })
+    Library:AddToRegistry(PanelHeaderSep, { BackgroundColor3 = 'OutlineColor' })
+
+    Library:CreateLabel({
+        Position       = UDim2.new(0, 8, 0, 0),
+        Size           = UDim2.new(1, -16, 1, 0),
+        TextSize       = 16,
+        Text           = title,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex         = 3,
+        Parent         = PanelHeader,
+    })
+
+    local Body = Library:Create('Frame', {
+        BackgroundColor3 = Library.BackgroundColor,
+        BorderSizePixel  = 0,
+        Position         = UDim2.new(0, 0, 0, 37),
+        Size             = UDim2.new(1, 0, 1, -37),
+        ZIndex           = 1,
+        Parent           = PanelInner,
+    })
+    Library:AddToRegistry(Body, { BackgroundColor3 = 'BackgroundColor' })
+
+    return PanelOuter, Body
+end
+
+-- ============================================================
+-- // inventory viewer
+-- ============================================================
+
+local COLS     = 5
+local ROWS     = 3
+local SLOT     = 68
+local SLOT_GAP = 3
+local PADDING  = 8
+
+local GRID_W  = COLS * SLOT + (COLS - 1) * SLOT_GAP
+local GRID_H  = ROWS * SLOT + (ROWS - 1) * SLOT_GAP
+local INV_W   = GRID_W + PADDING * 2 + 2
+local INV_H   = GRID_H + PADDING * 2 + 36 + 2
+
+local InvOuter, InvBody = BuildPanel(
+    Options.InvPosX.Value, Options.InvPosY.Value,
+    INV_W, INV_H,
+    'inventory viewer',
+    Toggles.InvVisible.Value
+)
+
+-- accent bar at top of body
+local InvAccentBar = Library:Create('Frame', {
+    BackgroundColor3 = Library.AccentColor,
+    BorderSizePixel  = 0,
+    Position         = UDim2.new(0, 0, 0, 0),
+    Size             = UDim2.new(1, 0, 0, 2),
+    ZIndex           = 3,
+    Parent           = InvBody,
+})
+Library:AddToRegistry(InvAccentBar, { BackgroundColor3 = 'AccentColor' })
+
+local GridFrame = Library:Create('Frame', {
+    BackgroundTransparency = 1,
+    Position               = UDim2.fromOffset(PADDING, PADDING + 2),
+    Size                   = UDim2.fromOffset(GRID_W, GRID_H),
+    ZIndex                 = 2,
+    Parent                 = InvBody,
+})
+
+local Slots = {}
+
+for row = 0, ROWS - 1 do
+    for col = 0, COLS - 1 do
+        local idx = row * COLS + col + 1
+        local x   = col * (SLOT + SLOT_GAP)
+        local y   = row * (SLOT + SLOT_GAP)
+
+        local SlotOuter = Library:Create('Frame', {
+            BackgroundColor3 = Library.OutlineColor,
+            BorderSizePixel  = 0,
+            Position         = UDim2.fromOffset(x, y),
+            Size             = UDim2.fromOffset(SLOT, SLOT),
+            ZIndex           = 3,
+            Parent           = GridFrame,
+        })
+        Library:AddToRegistry(SlotOuter, { BackgroundColor3 = 'OutlineColor' })
+
+        local SlotInner = Library:Create('Frame', {
+            BackgroundColor3 = Library.MainColor,
+            BorderSizePixel  = 0,
+            Position         = UDim2.fromOffset(1, 1),
+            Size             = UDim2.new(1, -2, 1, -2),
+            ZIndex           = 4,
+            Parent           = SlotOuter,
+        })
+        Library:AddToRegistry(SlotInner, { BackgroundColor3 = 'MainColor' })
+
+        local Icon = Library:Create('ImageLabel', {
+            BackgroundTransparency = 1,
+            Image                  = '',
+            Position               = UDim2.new(0, 4, 0, 4),
+            Size                   = UDim2.new(1, -8, 1, -18),
+            ZIndex                 = 5,
+            ScaleType              = Enum.ScaleType.Fit,
+            Parent                 = SlotInner,
+        })
+
+        local NameLbl = Library:Create('TextLabel', {
+            BackgroundTransparency = 1,
+            Font                   = Library.Font,
+            TextColor3             = Library.FontColor,
+            TextSize               = 9,
+            TextStrokeTransparency = 1,
+            TextTruncate           = Enum.TextTruncate.AtEnd,
+            Text                   = '',
+            Position               = UDim2.new(0, 2, 1, -13),
+            Size                   = UDim2.new(1, -4, 0, 12),
+            ZIndex                 = 6,
+            Parent                 = SlotInner,
+        })
+        Library:AddToRegistry(NameLbl, { TextColor3 = 'FontColor' })
+
+        local EquippedBar = Library:Create('Frame', {
+            BackgroundColor3 = Library.AccentColor,
+            BorderSizePixel  = 0,
+            Position         = UDim2.new(0, 0, 1, -2),
+            Size             = UDim2.new(1, 0, 0, 2),
+            Visible          = false,
+            ZIndex           = 7,
+            Parent           = SlotInner,
+        })
+        Library:AddToRegistry(EquippedBar, { BackgroundColor3 = 'AccentColor' })
+
+        Slots[idx] = {
+            Outer       = SlotOuter,
+            Inner       = SlotInner,
+            Icon        = Icon,
+            NameLbl     = NameLbl,
+            EquippedBar = EquippedBar,
+        }
+    end
+end
+
+-- ============================================================
+-- // player stats viewer
+-- ============================================================
+
+local STATS_W = 220
+
+local StatsOuter, StatsBody = BuildPanel(
+    Options.StatsPosX.Value, Options.StatsPosY.Value,
+    STATS_W, 180,
+    'player stats',
+    Toggles.StatsVisible.Value
+)
+
+local TargetBar = Library:Create('Frame', {
+    BackgroundColor3 = Library.AccentColor,
+    BorderSizePixel  = 0,
+    Position         = UDim2.new(0, 0, 0, 0),
+    Size             = UDim2.new(1, 0, 0, 2),
+    ZIndex           = 3,
+    Parent           = StatsBody,
+})
+Library:AddToRegistry(TargetBar, { BackgroundColor3 = 'AccentColor' })
+
+local TargetNameLbl = Library:CreateLabel({
+    Position       = UDim2.new(0, 6, 0, 4),
+    Size           = UDim2.new(1, -12, 0, 16),
+    TextSize       = 14,
+    Text           = 'no target',
+    TextXAlignment = Enum.TextXAlignment.Left,
+    ZIndex         = 3,
+    Parent         = StatsBody,
+})
+
+local NameDivOuter = Library:Create('Frame', {
+    BackgroundColor3 = Color3.new(0, 0, 0),
+    BorderColor3     = Color3.new(0, 0, 0),
+    Position         = UDim2.new(0, 2, 0, 22),
+    Size             = UDim2.new(1, -4, 0, 5),
+    ZIndex           = 3,
+    Parent           = StatsBody,
+})
+local NameDivInner = Library:Create('Frame', {
+    BackgroundColor3 = Library.MainColor,
+    BorderColor3     = Library.OutlineColor,
+    BorderMode       = Enum.BorderMode.Inset,
+    Size             = UDim2.new(1, 0, 1, 0),
+    ZIndex           = 4,
+    Parent           = NameDivOuter,
+})
+Library:AddToRegistry(NameDivInner, { BackgroundColor3 = 'MainColor', BorderColor3 = 'OutlineColor' })
+
+local STAT_START_Y = 30
+local STAT_ROW_H   = 18
+
+local statDefs = {
+    { key = 'health',      label = 'health',     toggle = 'StatsShowHealth' },
+    { key = 'kdr',         label = 'KDR',        toggle = 'StatsShowKDR' },
+    { key = 'clan',        label = 'clan',       toggle = 'StatsShowClan' },
+    { key = 'accountage',  label = 'account age', toggle = 'StatsShowAccountAge' },
+}
+
+local StatLabels = {}
+
+for i, def in ipairs(statDefs) do
+    local y = STAT_START_Y + (i - 1) * STAT_ROW_H
+
+    local nameLbl = Library:CreateLabel({
+        Position       = UDim2.new(0, 6, 0, y),
+        Size           = UDim2.new(0.55, 0, 0, STAT_ROW_H - 2),
+        TextSize       = 13,
+        Text           = def.label,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex         = 3,
+        Parent         = StatsBody,
+    })
+
+    local valLbl = Library:CreateLabel({
+        Position       = UDim2.new(0.55, 0, 0, y),
+        Size           = UDim2.new(0.45, -6, 0, STAT_ROW_H - 2),
+        TextSize       = 13,
+        Text           = '',
+        TextXAlignment = Enum.TextXAlignment.Right,
+        ZIndex         = 3,
+        Parent         = StatsBody,
+    })
+
+    valLbl.TextColor3 = Library.AccentColor
+    Library:AddToRegistry(valLbl, { TextColor3 = 'AccentColor' })
+
+    StatLabels[def.key] = {
+        Name = nameLbl,
+        Value = valLbl
+    }
+end
+
+
+StatsOuter.Size = UDim2.fromOffset(STATS_W, STAT_START_Y + #statDefs * STAT_ROW_H + 12 + 36 + 2)
+
+-- ============================================================
+-- // nearest-to-mouse player logic
+-- ============================================================
+
+local CurrentTarget = nil
+
+local function GetNearestToMouse()
+    local mousePos = Vector2.new(Mouse.X, Mouse.Y)
+    local nearest  = nil
+    local bestDist = math.huge
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LocalPlayer then continue end
+        local char = p.Character
+        if not char then continue end
+        local root = char:FindFirstChild('HumanoidRootPart')
+        if not root then continue end
+
+        local screenPos, onScreen = Camera:WorldToScreenPoint(root.Position)
+        if not onScreen then continue end
+
+        local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
+        if dist < bestDist then
+            bestDist = dist
+            nearest  = p
+        end
+    end
+
+    return nearest
+end
+
+local function UpdateStatsPanel(target)
+    if not target then
+        TargetNameLbl.Text = 'no target'
+        for _, row in pairs(StatLabels) do
+            row.Name.Visible = false
+            row.Value.Visible = false
+        end
+        return
+    end
+
+    TargetNameLbl.Text = target.Name
+
+    local function SetRowVisible(key, state)
+        if StatLabels[key] then
+            StatLabels[key].Name.Visible = state
+            StatLabels[key].Value.Visible = state
+        end
+    end
+
+    -- Health
+    if Toggles.StatsShowHealth.Value then
+        SetRowVisible("health", true)
+
+        local char = target.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+
+        StatLabels.health.Value.Text =
+            hum and (math.floor(hum.Health) .. " / " .. math.floor(hum.MaxHealth)) or "—"
+    else
+        SetRowVisible("health", false)
+    end
+
+    -- KDR
+    if Toggles.StatsShowKDR.Value then
+        SetRowVisible("kdr", true)
+
+        local playersFolder = ReplicatedStorage:FindFirstChild("Players")
+        local playerFolder = playersFolder and playersFolder:FindFirstChild(target.Name)
+        local statsFolder = playerFolder
+            and playerFolder:FindFirstChild("Status")
+            and playerFolder.Status:FindFirstChild("Journey")
+            and playerFolder.Status.Journey:FindFirstChild("Statistics")
+
+        if statsFolder then
+            local kills  = statsFolder:GetAttribute("Kills") or 0
+            local deaths = statsFolder:GetAttribute("Deaths") or 0
+            local rate   = deaths > 0 and (kills / deaths) or kills
+
+            StatLabels.kdr.Value.Text =
+                string.format("%d / %d | %.2f", kills, deaths, rate)
+        else
+            StatLabels.kdr.Value.Text = "no data"
+        end
+    else
+        SetRowVisible("kdr", false)
+    end
+
+    -- Clan
+    if Toggles.StatsShowClan.Value then
+        SetRowVisible("clan", true)
+
+        local playersFolder = ReplicatedStorage:FindFirstChild("Players")
+        local playerFolder = playersFolder and playersFolder:FindFirstChild(target.Name)
+        local clanFolder = playerFolder
+            and playerFolder:FindFirstChild("Status")
+            and playerFolder.Status:FindFirstChild("Journey")
+            and playerFolder.Status.Journey:FindFirstChild("Clan")
+
+        if clanFolder then
+            StatLabels.clan.Value.Text =
+                clanFolder:GetAttribute("CurrentClan") or "none"
+        else
+            StatLabels.clan.Value.Text = "none"
+        end
+    else
+        SetRowVisible("clan", false)
+    end
+
+    -- Account Age
+    if Toggles.StatsShowAccountAge.Value then
+        SetRowVisible("accountage", true)
+        StatLabels.accountage.Value.Text = target.AccountAge .. "d"
+    else
+        SetRowVisible("accountage", false)
+    end
+end
+
+-- ============================================================
+-- // slot blacklist (VALUE based, not existence based)
+-- ============================================================
+
+local SLOT_BLACKLIST = {
+    Melee = true,
+    EquipmentCompass = true,
+    EquipmentGPS = true,
+    EquipmentKeyChain = true,
+    EquipmentLighter = true,
+    EquipmentMap = true,
+    EquipmentRadio = true,
+}
+
+local function GetItemIcon(itemName)
+    local itemsList = ReplicatedStorage:FindFirstChild("ItemsList")
+    if not itemsList then return "" end
+
+    local itemFolder = itemsList:FindFirstChild(itemName)
+    if not itemFolder then return "" end
+
+    local props = itemFolder:FindFirstChild("ItemProperties")
+    if not props then return "" end
+
+    local icon = props:FindFirstChild("ItemIcon")
+    if icon and icon:IsA("ImageLabel") then
+        return icon.Image
+    end
+
+    return ""
+end
+
+-- ============================================================
+-- // FIXED FILTER LOGIC
+-- ============================================================
+
+local function ShouldRenderItem(objectValue)
+    if not objectValue or not objectValue:IsA("ObjectValue") then
+        return false
+    end
+
+    local slot = objectValue:GetAttribute("Slot")
+
+    -- hide only if Slot VALUE matches blacklist
+    if slot and SLOT_BLACKLIST[slot] then
+        return false
+    end
+
+    if objectValue:GetAttribute("Hidden") == true then
+        return false
+    end
+
+    if objectValue:GetAttribute("IsEquipped") == true then
+        return false
+    end
+
+    return true
+end
+
+-- ============================================================
+-- // INVENTORY REFRESH (WITH TEXT + DURABILITY TOGGLES)
+-- ============================================================
+
+local function RefreshInventory(targetPlayer)
+    local source = targetPlayer or LocalPlayer
+
+    -- clear all slots first
+    for i = 1, ROWS * COLS do
+        local s = Slots[i]
+        s.Icon.Image = ""
+        s.NameLbl.Text = ""
+        s.EquippedBar.Visible = false
+        s.Outer.BackgroundColor3 = Library.OutlineColor
+    end
+
+    local playersFolder = ReplicatedStorage:FindFirstChild("Players")
+    if not playersFolder then return end
+
+    local playerFolder = playersFolder:FindFirstChild(source.Name)
+    if not playerFolder then return end
+
+    local inventory = playerFolder:FindFirstChild("Inventory")
+    if not inventory then return end
+
+    local renderList = {}
+
+    for _, obj in ipairs(inventory:GetChildren()) do
+        if ShouldRenderItem(obj) then
+            table.insert(renderList, obj)
+        end
+    end
+
+    table.sort(renderList, function(a, b)
+        return a.Name < b.Name
+    end)
+
+    -- fetch toggles
+    local showText = Toggles.InvShowText and Toggles.InvShowText.Value
+    local showDurability = Toggles.InvShowDurability and Toggles.InvShowDurability.Value
+
+    for index, obj in ipairs(renderList) do
+        if index > ROWS * COLS then break end
+
+        local s = Slots[index]
+        local itemName = obj.Name
+        local durability = obj:GetAttribute("Durability")
+        local maxDurability = obj:GetAttribute("MaxDurability")
+
+        -- set icon
+        s.Icon.Image = GetItemIcon(itemName)
+
+        -- build text based on toggles
+        if showText and showDurability and durability and maxDurability then
+            s.NameLbl.Text = string.format("%s\n%d/%d", itemName, durability, maxDurability)
+        elseif showText then
+            s.NameLbl.Text = itemName
+        elseif showDurability and durability and maxDurability then
+            s.NameLbl.Text = string.format("%d/%d", durability, maxDurability)
+        else
+            s.NameLbl.Text = ""
+        end
+    end
+end
+
+-- ============================================================
+-- // TARGET + HEARTBEAT (CLEANED)
+-- ============================================================
+
+local lastTarget = nil
+local updateTimer = 0
+
+RunService.Heartbeat:Connect(function(dt)
+    updateTimer += dt
+    if updateTimer < 0.1 then return end
+    updateTimer = 0
+
+    if not (Toggles.StatsVisible.Value or Toggles.InvVisible.Value) then
+        return
+    end
+
+    local newTarget = GetNearestToMouse()
+
+    if newTarget ~= lastTarget then
+        lastTarget = newTarget
+        CurrentTarget = newTarget
+
+        if Toggles.StatsVisible.Value then
+            UpdateStatsPanel(CurrentTarget)
+        end
+
+        if Toggles.InvVisible.Value then
+            RefreshInventory(CurrentTarget)
+        end
+    end
+
+    if Toggles.StatsVisible.Value and CurrentTarget then
+        UpdateStatsPanel(CurrentTarget)
+    end
+end)
+
+-- ============================================================
+-- // CONNECT INVENTORY PROPERLY (THIS WAS MISSING BEFORE)
+-- ============================================================
+
+local function ConnectReplicatedInventory(player)
+    local playersFolder = ReplicatedStorage:WaitForChild("Players", 5)
+    if not playersFolder then return end
+
+    local playerFolder = playersFolder:WaitForChild(player.Name, 5)
+    if not playerFolder then return end
+
+    local inventory = playerFolder:WaitForChild("Inventory", 5)
+    if not inventory then return end
+
+    local function HookItem(obj)
+        if not obj:IsA("ObjectValue") then return end
+
+        local function RefreshIfTarget()
+            if player == CurrentTarget then
+                RefreshInventory(CurrentTarget)
+            end
+        end
+
+        obj:GetAttributeChangedSignal("Durability"):Connect(RefreshIfTarget)
+        obj:GetAttributeChangedSignal("MaxDurability"):Connect(RefreshIfTarget)
+        obj:GetAttributeChangedSignal("Hidden"):Connect(RefreshIfTarget)
+        obj:GetAttributeChangedSignal("Slot"):Connect(RefreshIfTarget)
+        obj:GetAttributeChangedSignal("IsEquipped"):Connect(RefreshIfTarget)
+    end
+
+    for _, obj in ipairs(inventory:GetChildren()) do
+        HookItem(obj)
+    end
+
+    inventory.ChildAdded:Connect(function(obj)
+        HookItem(obj)
+        if player == CurrentTarget then
+            RefreshInventory(CurrentTarget)
+        end
+    end)
+
+    inventory.ChildRemoved:Connect(function()
+        if player == CurrentTarget then
+            RefreshInventory(CurrentTarget)
+        end
+    end)
+end
+
+-- CONNECT FOR ALL PLAYERS
+for _, plr in ipairs(Players:GetPlayers()) do
+    ConnectReplicatedInventory(plr)
+end
+
+Players.PlayerAdded:Connect(function(plr)
+    ConnectReplicatedInventory(plr)
+end)
+
+-- ============================================================
+-- // TOGGLE FIXES
+-- ============================================================
+
+Toggles.InvVisible:OnChanged(function()
+    InvOuter.Visible = Toggles.InvVisible.Value
+    if Toggles.InvVisible.Value then
+        RefreshInventory(CurrentTarget)
+    end
+end)
+
+Toggles.StatsVisible:OnChanged(function()
+    StatsOuter.Visible = Toggles.StatsVisible.Value
+    if not Toggles.StatsVisible.Value then
+        UpdateStatsPanel(nil)
+    end
+end)
+
+Toggles.InvShowText:OnChanged(function()
+    RefreshInventory(CurrentTarget)
+end)
+
+Toggles.InvShowDurability:OnChanged(function()
+    RefreshInventory(CurrentTarget)
+end)
+
+Toggles.StatsShowHealth:OnChanged(function() UpdateStatsPanel(CurrentTarget) end)
+Toggles.StatsShowKDR:OnChanged(function() UpdateStatsPanel(CurrentTarget) end)
+Toggles.StatsShowClan:OnChanged(function() UpdateStatsPanel(CurrentTarget) end)
+Toggles.StatsShowAccountAge:OnChanged(function() UpdateStatsPanel(CurrentTarget) end)
+
+-- ============================================================
+-- // POSITION SLIDER FIX
+-- ============================================================
+
+Options.InvPosX:OnChanged(function()
+    InvOuter.Position = UDim2.fromOffset(
+        Options.InvPosX.Value,
+        Options.InvPosY.Value
+    )
+end)
+
+Options.InvPosY:OnChanged(function()
+    InvOuter.Position = UDim2.fromOffset(
+        Options.InvPosX.Value,
+        Options.InvPosY.Value
+    )
+end)
+
+Options.StatsPosX:OnChanged(function()
+    StatsOuter.Position = UDim2.fromOffset(
+        Options.StatsPosX.Value,
+        Options.StatsPosY.Value
+    )
+end)
+
+Options.StatsPosY:OnChanged(function()
+    StatsOuter.Position = UDim2.fromOffset(
+        Options.StatsPosX.Value,
+        Options.StatsPosY.Value
+    )
+end)
+
+-- // 5. WEAPON VISUALS LOGIC
+local WeaponWireframe = nil  -- For outline
+
+-- Helper function to recursively apply changes to all parts
+local function ApplyWeaponVisuals(model, tintColor, tintTransparency, overrideTransparency, transValue, material)
+    if not model then return end
+    
+    for _, child in pairs(model:GetChildren()) do
+        -- If it's a part, apply visuals
+        if child:IsA("BasePart") then
+            -- Store original texture if we're overriding material
+            if material ~= "Default" and child.Material ~= Enum.Material[material] then
+                -- Material override (removes textures automatically)
+                child.Material = Enum.Material[material]
+            elseif material == "Default" then
+                -- Could restore original material here if we stored it, but for now just leave as is
+            end
+            
+            -- Apply color tint
+            if Toggles.weapon_tint_enabled.Value then
+                child.Color = tintColor
+                -- Transparency from color picker
+                if tintTransparency then
+                    child.Transparency = tintTransparency
+                end
+            end
+            
+            -- Override transparency if enabled (overrides color picker transparency)
+            if Toggles.weapon_transparency_enabled.Value then
+                child.Transparency = transValue
+            end
+            
+        -- Recurse into models/folders
+        elseif child:IsA("Model") or child:IsA("Folder") then
+            ApplyWeaponVisuals(child, tintColor, tintTransparency, overrideTransparency, transValue, material)
+        end
+    end
+end
+
+-- Handle wireframe outline
+local function UpdateWeaponWireframe(viewModel)
+    if Toggles.weapon_outline_enabled.Value then
+        if not WeaponWireframe or not WeaponWireframe.Parent then
+            WeaponWireframe = Instance.new("SelectionBox")
+            WeaponWireframe.Name = "WeaponOutline"
+            WeaponWireframe.Adornee = viewModel
+            WeaponWireframe.AlwaysOnTop = true
+            WeaponWireframe.SurfaceTransparency = 1
+            WeaponWireframe.Parent = WireframeFolder  -- Use your existing wireframe folder
+        end
+        WeaponWireframe.Color3 = Options.weapon_outline_color.Value
+        WeaponWireframe.Transparency = Options.weapon_outline_color.Transparency
+        WeaponWireframe.LineThickness = Options.weapon_outline_thickness.Value
+    elseif WeaponWireframe then
+        WeaponWireframe:Destroy()
+        WeaponWireframe = nil
+    end
+end
+
+-- Handle glow effect (Highlight)
+local WeaponGlow = nil
+local function UpdateWeaponGlow(viewModel)
+    if Toggles.weapon_glow_enabled.Value then
+        if not WeaponGlow or not WeaponGlow.Parent then
+            WeaponGlow = Instance.new("Highlight")
+            WeaponGlow.Name = "WeaponGlow"
+            WeaponGlow.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            WeaponGlow.Parent = viewModel
+        end
+        WeaponGlow.FillColor = Options.weapon_glow_color.Value
+        WeaponGlow.FillTransparency = Options.weapon_glow_color.Transparency
+        WeaponGlow.OutlineColor = Options.weapon_glow_color.Value
+        WeaponGlow.OutlineTransparency = 1  -- No outline, just glow
+    elseif WeaponGlow then
+        WeaponGlow:Destroy()
+        WeaponGlow = nil
+    end
+end
+
+-- Handle scale and position (using the Handle's weld or Motor6D)
+local function UpdateWeaponTransform(viewModel)
+    if not viewModel then return end
+    
+    -- Find the Handle (common in guns)
+    local handle = viewModel:FindFirstChild("Handle")
+    if not handle then
+        -- Try to find any part that might be the main grip
+        for _, child in pairs(viewModel:GetChildren()) do
+            if child:IsA("BasePart") then
+                handle = child
+                break
+            end
+        end
+    end
+    
+    if handle then
+        -- Look for weld or Motor6D in the handle
+        local weld = handle:FindFirstChildWhichIsA("Weld") or handle:FindFirstChildWhichIsA("Motor6D")
+        if weld then
+            -- Store original C0 if we haven't yet
+            if not weld:GetAttribute("OriginalC0") then
+                weld:SetAttribute("OriginalC0", weld.C0)
+            end
+            
+            -- Apply scale and offset
+            local original = weld:GetAttribute("OriginalC0")
+            local scale = Options.weapon_scale.Value
+            
+            -- Create scaled and offset CFrame
+            local offset = CFrame.new(
+                Options.weapon_offset_x.Value,
+                Options.weapon_offset_y.Value,
+                Options.weapon_offset_z.Value
+            )
+            
+            -- Apply scale to position part of original C0, keep rotation
+            if original then
+                local scaledPos = original.Position * scale
+                weld.C0 = CFrame.new(scaledPos) * original.Rotation * offset
+            end
+        end
+    end
+end
+
+-- Main weapon visuals loop
+RunService.RenderStepped:Connect(function()
+    -- Check if any weapon visuals are enabled to avoid unnecessary processing
+    local anyEnabled = Toggles.weapon_tint_enabled.Value or 
+                       Toggles.weapon_transparency_enabled.Value or 
+                       Toggles.weapon_outline_enabled.Value or 
+                       Toggles.weapon_glow_enabled.Value or 
+                       Options.weapon_material.Value ~= "Default" or
+                       Options.weapon_scale.Value ~= 1 or
+                       Options.weapon_offset_x.Value ~= 0 or
+                       Options.weapon_offset_y.Value ~= 0 or
+                       Options.weapon_offset_z.Value ~= 0
+    
+    if not anyEnabled then
+        -- Clean up if nothing is enabled
+        if WeaponWireframe then
+            WeaponWireframe:Destroy()
+            WeaponWireframe = nil
+        end
+        if WeaponGlow then
+            WeaponGlow:Destroy()
+            WeaponGlow = nil
+        end
+        return
+    end
+    
+    -- Get the ViewModel
+    local viewModel = workspace.Camera:FindFirstChild("ViewModel")
+    if not viewModel then return end
+    
+    -- Apply material, color, transparency to all parts
+    ApplyWeaponVisuals(
+        viewModel,
+        Options.weapon_tint_color.Value,
+        Options.weapon_tint_color.Transparency,
+        Toggles.weapon_transparency_enabled.Value,
+        Options.weapon_transparency_value.Value,
+        Options.weapon_material.Value
+    )
+    
+    -- Update outline
+    UpdateWeaponWireframe(viewModel)
+    
+    -- Update glow
+    UpdateWeaponGlow(viewModel)
+    
+    -- Update scale and position
+    UpdateWeaponTransform(viewModel)
+end)
+
+-- Clean up when visuals are disabled or script unloads
+Library:OnUnload(function()
+    if WeaponWireframe then
+        WeaponWireframe:Destroy()
+    end
+    if WeaponGlow then
+        WeaponGlow:Destroy()
+    end
+    
+    -- Restore original weld positions (optional)
+    local viewModel = workspace.Camera:FindFirstChild("ViewModel")
+    if viewModel then
+        local handle = viewModel:FindFirstChild("Handle")
+        if handle then
+            local weld = handle:FindFirstChildWhichIsA("Weld") or handle:FindFirstChildWhichIsA("Motor6D")
+            if weld and weld:GetAttribute("OriginalC0") then
+                weld.C0 = weld:GetAttribute("OriginalC0")
+            end
+        end
+    end
+end)
+
+-- 6. INIT
+Players.PlayerAdded:Connect(CreateESP)
+for _, P in pairs(Players:GetPlayers()) do CreateESP(P) end
